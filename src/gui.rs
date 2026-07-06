@@ -24,6 +24,15 @@ pub enum GuiEvent {
     UpdateFinished(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GuiTab {
+    #[default]
+    Overview,
+    Modules,
+    Logs,
+    Settings,
+}
+
 pub struct GuiApp {
     filter: SelectionFilter,
     events_tx: Sender<GuiEvent>,
@@ -35,6 +44,7 @@ pub struct GuiApp {
     status_line: String,
     started_scan: bool,
     persisted_selection: BTreeSet<String>,
+    active_tab: GuiTab,
 }
 
 impl GuiApp {
@@ -55,6 +65,7 @@ impl GuiApp {
             status_line: String::from("Ожидание запуска"),
             started_scan: false,
             persisted_selection,
+            active_tab: GuiTab::Overview,
         };
         app.start_scan();
         app
@@ -192,6 +203,236 @@ impl GuiApp {
             }
         }
     }
+
+    fn show_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Проверить обновления"))
+                .clicked()
+            {
+                self.started_scan = false;
+                self.start_scan();
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Обновить выбранное"))
+                .clicked()
+            {
+                self.start_update();
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Выбрать все"))
+                .clicked()
+            {
+                self.select_all();
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Только системные"))
+                .clicked()
+            {
+                self.select_by_kind(ModuleKind::System);
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Только инструменты"))
+                .clicked()
+            {
+                self.select_by_kind(ModuleKind::Tool);
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Только Python"))
+                .clicked()
+            {
+                self.select_by_kind(ModuleKind::Python);
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Инвертировать выбор"))
+                .clicked()
+            {
+                self.invert_selection();
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Выбрать с обновлениями"))
+                .clicked()
+            {
+                self.select_only_updates();
+            }
+
+            if ui
+                .add_enabled(!self.busy, egui::Button::new("Снять выбор"))
+                .clicked()
+            {
+                self.clear_selection();
+            }
+
+            let auto_yes_response =
+                ui.checkbox(&mut self.auto_yes, "Автоматическое согласие (-y)");
+            if auto_yes_response.changed() {
+                self.persist_state();
+            }
+        });
+
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.active_tab, GuiTab::Overview, "Обзор");
+            ui.selectable_value(&mut self.active_tab, GuiTab::Modules, "Модули");
+            ui.selectable_value(&mut self.active_tab, GuiTab::Logs, "Логи");
+            ui.selectable_value(&mut self.active_tab, GuiTab::Settings, "Настройки");
+        });
+
+        ui.separator();
+        ui.label(&self.status_line);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!(
+                "Выбрано модулей: {}/{}",
+                self.selected_count(),
+                self.modules.len()
+            ));
+            ui.separator();
+            ui.label(format!(
+                "С обновлениями: {}/{}",
+                self.updates_count(),
+                self.modules.len()
+            ));
+            });
+    }
+
+    fn show_overview_tab(&self, ui: &mut egui::Ui) {
+        ui.heading("Сводка");
+        ui.add_space(4.0);
+        if let Some(warning) = if system::should_warn_about_elevation() {
+            Some("Запуск без прав администратора: системные менеджеры могут быть недоступны")
+        } else {
+            None
+        } {
+            ui.colored_label(egui::Color32::YELLOW, warning);
+            ui.add_space(4.0);
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Найдено модулей: {}", self.modules.len()));
+            ui.separator();
+            ui.label(format!("Выбрано: {}", self.selected_count()));
+            ui.separator();
+            ui.label(format!("Требуют обновления: {}", self.updates_count()));
+            ui.separator();
+            ui.label(format!("Логов накоплено: {}", self.logs.len()));
+        });
+
+        ui.add_space(8.0);
+        ui.label("Используйте вкладку 'Модули' для выбора пакетов, 'Логи' для просмотра прогресса и ошибок.");
+    }
+
+    fn show_modules_tab(&mut self, ui: &mut egui::Ui) {
+        if let Some(warning) = if system::should_warn_about_elevation() {
+            Some("Запуск без прав администратора: системные менеджеры могут быть недоступны")
+        } else {
+            None
+        } {
+            ui.colored_label(egui::Color32::YELLOW, warning);
+            ui.add_space(6.0);
+        }
+
+        egui::ScrollArea::vertical()
+            .id_salt("modules_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.modules.is_empty() {
+                    ui.label("Список модулей пуст. Нажмите 'Проверить обновления'.");
+                    return;
+                }
+
+                let available_width = ui.available_width();
+                let columns = ((available_width / 420.0).floor() as usize).clamp(1, 3);
+                let mut selection_changed = false;
+
+                if columns == 1 {
+                    for module in &mut self.modules {
+                        Self::render_module_card(ui, module, &mut selection_changed);
+                    }
+                } else {
+                    ui.columns(columns, |columns_ui| {
+                        for (index, module) in self.modules.iter_mut().enumerate() {
+                            let column = &mut columns_ui[index % columns];
+                            Self::render_module_card(column, module, &mut selection_changed);
+                        }
+                    });
+                }
+
+                if selection_changed {
+                    self.persist_state();
+                }
+            });
+    }
+
+    fn show_logs_tab(&self, ui: &mut egui::Ui) {
+        ui.heading("Console Log");
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical()
+            .id_salt("logs_scroll")
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                if self.logs.is_empty() {
+                    ui.label("Логи пока пусты");
+                } else {
+                    for line in &self.logs {
+                        ui.monospace(line);
+                    }
+                }
+            });
+    }
+
+    fn show_settings_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Настройки");
+        ui.add_space(4.0);
+
+        let auto_yes_response = ui.checkbox(
+            &mut self.auto_yes,
+            "Автоматическое согласие на обновление (-y)",
+        );
+        if auto_yes_response.changed() {
+            self.persist_state();
+        }
+
+        ui.add_space(8.0);
+        ui.label("Состояние выбранных модулей и настройка автосогласия сохраняются между запусками.");
+    }
+
+    fn render_module_card(
+        ui: &mut egui::Ui,
+        module: &mut ModuleSnapshot,
+        selection_changed: &mut bool,
+    ) {
+        ui.group(|ui| {
+            ui.set_min_width(320.0);
+            ui.horizontal_wrapped(|ui| {
+                let response = ui.checkbox(&mut module.selected, "");
+                if response.changed() {
+                    *selection_changed = true;
+                }
+                ui.heading(format!("{} ({:?})", module.name, module.kind));
+            });
+
+            ui.label(module.status_label());
+
+            if !module.updates.is_empty() {
+                egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for line in module.detail_lines() {
+                            ui.label(line);
+                        }
+                    });
+            }
+        });
+    }
 }
 
 impl App for GuiApp {
@@ -201,104 +442,16 @@ impl App for GuiApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
         egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!self.busy, egui::Button::new("Проверить обновления")).clicked() {
-                    self.started_scan = false;
-                    self.start_scan();
-                }
-
-                if ui.add_enabled(!self.busy, egui::Button::new("Обновить выбранное")).clicked() {
-                    self.start_update();
-                }
-
-                if ui.add_enabled(!self.busy, egui::Button::new("Выбрать все")).clicked() {
-                    self.select_all();
-                }
-
-                if ui.add_enabled(!self.busy, egui::Button::new("Только системные")).clicked() {
-                    self.select_by_kind(ModuleKind::System);
-                }
-
-                if ui.add_enabled(!self.busy, egui::Button::new("Только инструменты")).clicked() {
-                    self.select_by_kind(ModuleKind::Tool);
-                }
-
-                if ui.add_enabled(!self.busy, egui::Button::new("Только Python")).clicked() {
-                    self.select_by_kind(ModuleKind::Python);
-                }
-
-                if ui.add_enabled(!self.busy, egui::Button::new("Инвертировать выбор")).clicked() {
-                    self.invert_selection();
-                }
-
-                if ui
-                    .add_enabled(!self.busy, egui::Button::new("Выбрать с обновлениями"))
-                    .clicked()
-                {
-                    self.select_only_updates();
-                }
-
-                if ui.add_enabled(!self.busy, egui::Button::new("Снять выбор")).clicked() {
-                    self.clear_selection();
-                }
-
-                let auto_yes_response = ui.checkbox(&mut self.auto_yes, "Автоматическое согласие (-y)");
-                if auto_yes_response.changed() {
-                    self.persist_state();
-                }
-            });
-            ui.label(&self.status_line);
-            ui.label(format!("Выбрано модулей: {}/{}", self.selected_count(), self.modules.len()));
-            ui.label(format!("С обновлениями: {}/{}", self.updates_count(), self.modules.len()));
-        });
-
-        egui::Panel::bottom("log_panel").show(ui, |ui| {
-            ui.heading("Console Log");
-            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                for line in &self.logs {
-                    ui.monospace(line);
-                }
-            });
+            self.show_toolbar(ui);
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            if let Some(warning) = if system::should_warn_about_elevation() {
-                Some("Запуск без прав администратора: системные менеджеры могут быть недоступны")
-            } else {
-                None
-            } {
-                ui.colored_label(egui::Color32::YELLOW, warning);
+            match self.active_tab {
+                GuiTab::Overview => self.show_overview_tab(ui),
+                GuiTab::Modules => self.show_modules_tab(ui),
+                GuiTab::Logs => self.show_logs_tab(ui),
+                GuiTab::Settings => self.show_settings_tab(ui),
             }
-
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let mut selection_changed = false;
-                for module in &mut self.modules {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            let response = ui.checkbox(&mut module.selected, "");
-                            if response.changed() {
-                                selection_changed = true;
-                            }
-                            ui.heading(format!("{} ({:?})", module.name, module.kind));
-                            ui.label(module.status_label());
-                        });
-
-                        if !module.updates.is_empty() {
-                            egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
-                                .default_open(false)
-                                .show(ui, |ui| {
-                                    for line in module.detail_lines() {
-                                        ui.label(line);
-                                    }
-                                });
-                        }
-                    });
-                }
-
-                if selection_changed {
-                    self.persist_state();
-                }
-            });
         });
     }
 }
