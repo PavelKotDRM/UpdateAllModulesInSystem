@@ -527,6 +527,7 @@ impl GuiApp {
                     .iter()
                     .filter(|update| update.selected)
                     .count();
+                let detail_lines = module.detail_lines();
                 ui.small(format!(
                     "Выбрано приложений: {}/{}",
                     selected_updates_count,
@@ -536,16 +537,13 @@ impl GuiApp {
                 egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
                     .default_open(false)
                     .show(ui, |ui| {
-                        for update in &mut module.updates {
+                        for (update, detail_line) in module.updates.iter_mut().zip(detail_lines.into_iter()) {
                             ui.horizontal_wrapped(|ui| {
                                 let response = ui.checkbox(&mut update.selected, "");
                                 if response.changed() {
                                     *selection_changed = true;
                                 }
-                                ui.label(format!(
-                                    "{}: {} -> {}",
-                                    update.name, update.current_version, update.available_version
-                                ));
+                                ui.label(detail_line);
                             });
                         }
                     });

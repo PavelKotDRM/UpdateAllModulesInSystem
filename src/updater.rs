@@ -1,11 +1,13 @@
 use crate::model::PackageUpdate;
-use encoding_rs::{IBM866, WINDOWS_1251};
 use std::fmt::{Display, Formatter};
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
 use thiserror::Error;
+
+#[cfg(target_os = "windows")]
+use encoding_rs::{IBM866, WINDOWS_1251};
 
 pub trait Updater: Send + Sync {
     fn name(&self) -> &'static str;
