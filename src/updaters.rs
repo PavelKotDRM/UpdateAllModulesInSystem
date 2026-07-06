@@ -56,12 +56,22 @@ pub fn registry() -> Vec<UpdaterDescriptor> {
         WingetUpdater::descriptor(),
         ChocolateyUpdater::descriptor(),
         AptUpdater::descriptor(),
+        AptGetUpdater::descriptor(),
         DnfUpdater::descriptor(),
+        YumUpdater::descriptor(),
+        ZypperUpdater::descriptor(),
         PacmanUpdater::descriptor(),
+        ApkUpdater::descriptor(),
+        XbpsUpdater::descriptor(),
+        EmergeUpdater::descriptor(),
+        FlatpakUpdater::descriptor(),
+        SnapUpdater::descriptor(),
+        PkconUpdater::descriptor(),
         BrewUpdater::descriptor(),
         RustupUpdater::descriptor(),
         Msys2Updater::descriptor(),
         PipUpdater::descriptor(),
+        UvUpdater::descriptor(),
     ]
 }
 
@@ -128,7 +138,16 @@ fn apply_pip_updates(
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
     let updates = if selected_updates.is_empty() {
-        parse_pip_updates()?
+        match parse_pip_updates() {
+            Ok(values) => values,
+            Err(error) if uv_installed() => {
+                let _ = log_sender.send(format!(
+                    "pip: не удалось получить список через python -m pip ({error}); пробую uv"
+                ));
+                parse_uv_updates()?
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         selected_updates.to_vec()
     };
@@ -142,7 +161,16 @@ fn apply_pip_updates(
         args.push("--no-input".to_owned());
     }
     args.extend(updates.into_iter().map(|update| update.name));
-    stream_python_module(&args, log_sender)
+    match stream_python_module(&args, log_sender) {
+        Ok(()) => Ok(()),
+        Err(error) if uv_installed() => {
+            let _ = log_sender.send(format!(
+                "pip: обновление через python -m pip завершилось ошибкой ({error}); пробую uv"
+            ));
+            run_uv_pip_stream(&args, log_sender)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn installed_pip() -> bool {
@@ -150,7 +178,83 @@ fn installed_pip() -> bool {
 }
 
 fn check_pip_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    parse_pip_updates()
+    match parse_pip_updates() {
+        Ok(updates) => Ok(updates),
+        Err(_) if uv_installed() => parse_uv_updates(),
+        Err(error) => Err(error),
+    }
+}
+
+fn uv_installed() -> bool {
+    system::command_available("uv")
+}
+
+fn run_uv_pip_capture(args: &[String]) -> Result<crate::updater::CommandOutput, UpdaterError> {
+    let mut command_args = vec!["pip".to_owned()];
+    command_args.extend(args.iter().cloned());
+    capture_command("uv", &command_args)
+}
+
+fn run_uv_pip_stream(args: &[String], log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+    let mut command_args = vec!["pip".to_owned()];
+    command_args.extend(args.iter().cloned());
+    let output = stream_command("uv", &command_args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "uv".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn parse_uv_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    #[derive(Debug, Deserialize)]
+    struct UvPackage {
+        name: String,
+        version: String,
+        latest_version: String,
+    }
+
+    let output = run_uv_pip_capture(&[
+        "list".to_owned(),
+        "--outdated".to_owned(),
+        "--format=json".to_owned(),
+    ])?;
+    let packages: Vec<UvPackage> = serde_json::from_str(&output.stdout)?;
+    Ok(packages
+        .into_iter()
+        .map(|package| PackageUpdate::new(package.name, package.version, package.latest_version))
+        .collect())
+}
+
+fn check_uv_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    parse_uv_updates()
+}
+
+fn apply_uv_updates(
+    force_yes: bool,
+    selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let updates = if selected_updates.is_empty() {
+        parse_uv_updates()?
+    } else {
+        selected_updates.to_vec()
+    };
+    if updates.is_empty() {
+        let _ = log_sender.send("uv: обновления не найдены".to_owned());
+        return Ok(());
+    }
+
+    let mut args = vec!["install".to_owned(), "--upgrade".to_owned()];
+    if force_yes {
+        args.push("--no-input".to_owned());
+    }
+    args.extend(updates.into_iter().map(|update| update.name));
+    run_uv_pip_stream(&args, log_sender)
 }
 
 fn apply_rustup_updates(
@@ -315,13 +419,23 @@ $installer = $session.CreateUpdateInstaller()
 $installer.Updates = $updates
 $installResult = $installer.Install()
 
-Write-Output ("Windows Update: код результата: " + [int]$installResult.ResultCode)
+$resultCode = [int]$installResult.ResultCode
+$resultDescription = switch ($resultCode) {
+    0 { 'не начато (NotStarted)' }
+    1 { 'в процессе (InProgress)' }
+    2 { 'успешно (Succeeded)' }
+    3 { 'успешно с ошибками (SucceededWithErrors)' }
+    4 { 'ошибка (Failed)' }
+    5 { 'прервано (Aborted)' }
+    default { 'неизвестный код' }
+}
+Write-Output ("Windows Update: код результата: " + $resultCode + " (" + $resultDescription + ")")
 if ($installResult.RebootRequired) {
     Write-Output 'Windows Update: требуется перезагрузка системы'
 }
 
-if ([int]$installResult.ResultCode -gt 3) {
-    Write-Error 'Windows Update: установка завершилась с ошибкой'
+if ($resultCode -gt 3) {
+    [Console]::Error.WriteLine('Windows Update: установка завершилась с ошибкой')
     exit 1
 }
 exit 0
@@ -513,6 +627,41 @@ fn apt_apply_updates(
     }
 }
 
+fn apt_get_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("apt-get")
+}
+
+fn apt_get_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    if system::command_available("apt") {
+        let output = capture_command("apt", &vec!["list".to_owned(), "--upgradable".to_owned()])?;
+        return Ok(heuristic_parse_updates("apt-get", &output.merged_text()));
+    }
+
+    let output = capture_command("apt-get", &vec!["-s".to_owned(), "upgrade".to_owned()])?;
+    Ok(heuristic_parse_updates("apt-get", &output.merged_text()))
+}
+
+fn apt_get_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["upgrade".to_owned()];
+    if force_yes {
+        args.push("-y".to_owned());
+    }
+    let output = stream_command("apt-get", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "apt-get".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
 fn dnf_installed() -> bool {
     cfg!(target_os = "linux") && system::command_available("dnf")
 }
@@ -537,6 +686,66 @@ fn dnf_apply_updates(
     } else {
         Err(UpdaterError::CommandFailed {
             program: "dnf".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn yum_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("yum")
+}
+
+fn yum_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command("yum", &vec!["check-update".to_owned()])?;
+    Ok(heuristic_parse_updates("yum", &output.merged_text()))
+}
+
+fn yum_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["upgrade".to_owned()];
+    if force_yes {
+        args.push("-y".to_owned());
+    }
+    let output = stream_command("yum", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "yum".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn zypper_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("zypper")
+}
+
+fn zypper_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command("zypper", &vec!["list-updates".to_owned()])?;
+    Ok(heuristic_parse_updates("zypper", &output.merged_text()))
+}
+
+fn zypper_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["update".to_owned()];
+    if force_yes {
+        args.push("--non-interactive".to_owned());
+    }
+    let output = stream_command("zypper", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "zypper".to_owned(),
             code: output.exit_code,
             stderr: output.stderr,
         })
@@ -569,6 +778,189 @@ fn pacman_apply_updates(
     } else {
         Err(UpdaterError::CommandFailed {
             program: "pacman".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn apk_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("apk")
+}
+
+fn apk_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command("apk", &vec!["version".to_owned(), "-l".to_owned(), "<".to_owned()])?;
+    Ok(heuristic_parse_updates("apk", &output.merged_text()))
+}
+
+fn apk_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["upgrade".to_owned()];
+    if force_yes {
+        args.push("--no-interactive".to_owned());
+    }
+    let output = stream_command("apk", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "apk".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn xbps_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("xbps-install")
+}
+
+fn xbps_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command("xbps-install", &vec!["-Mun".to_owned()])?;
+    Ok(heuristic_parse_updates("xbps", &output.merged_text()))
+}
+
+fn xbps_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["-Su".to_owned()];
+    if force_yes {
+        args.push("-y".to_owned());
+    }
+    let output = stream_command("xbps-install", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "xbps-install".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn emerge_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("emerge")
+}
+
+fn emerge_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command("emerge", &vec!["-puDN".to_owned(), "@world".to_owned()])?;
+    Ok(heuristic_parse_updates("emerge", &output.merged_text()))
+}
+
+fn emerge_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["-uDN".to_owned(), "@world".to_owned()];
+    if force_yes {
+        args.push("--ask=n".to_owned());
+    }
+    let output = stream_command("emerge", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "emerge".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn flatpak_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("flatpak")
+}
+
+fn flatpak_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command(
+        "flatpak",
+        &vec![
+            "remote-ls".to_owned(),
+            "--updates".to_owned(),
+            "--columns=application,installed-version,version".to_owned(),
+        ],
+    )?;
+    Ok(heuristic_parse_updates("flatpak", &output.merged_text()))
+}
+
+fn flatpak_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["update".to_owned()];
+    if force_yes {
+        args.push("-y".to_owned());
+    }
+    let output = stream_command("flatpak", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "flatpak".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn snap_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("snap")
+}
+
+fn snap_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command("snap", &vec!["refresh".to_owned(), "--list".to_owned()])?;
+    Ok(heuristic_parse_updates("snap", &output.merged_text()))
+}
+
+fn snap_apply_updates(
+    _force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let output = stream_command("snap", &vec!["refresh".to_owned()], log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "snap".to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn pkcon_installed() -> bool {
+    cfg!(target_os = "linux") && system::command_available("pkcon")
+}
+
+fn pkcon_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command("pkcon", &vec!["get-updates".to_owned()])?;
+    Ok(heuristic_parse_updates("pkcon", &output.merged_text()))
+}
+
+fn pkcon_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["update".to_owned()];
+    if force_yes {
+        args.push("-y".to_owned());
+    }
+    let output = stream_command("pkcon", &args, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "pkcon".to_owned(),
             code: output.exit_code,
             stderr: output.stderr,
         })
@@ -690,12 +1082,22 @@ define_simple_updater!(WingetUpdater, "winget", ModuleKind::System, true, winget
 define_simple_updater!(WindowsUpdateUpdater, "windows-update", ModuleKind::System, true, windows_update_installed, windows_update_check_updates, windows_update_apply_updates);
 define_simple_updater!(ChocolateyUpdater, "choco", ModuleKind::System, true, chocolatey_installed, chocolatey_check_updates, chocolatey_apply_updates);
 define_simple_updater!(AptUpdater, "apt", ModuleKind::System, true, apt_installed, apt_check_updates, apt_apply_updates);
+define_simple_updater!(AptGetUpdater, "apt-get", ModuleKind::System, true, apt_get_installed, apt_get_check_updates, apt_get_apply_updates);
 define_simple_updater!(DnfUpdater, "dnf", ModuleKind::System, true, dnf_installed, dnf_check_updates, dnf_apply_updates);
+define_simple_updater!(YumUpdater, "yum", ModuleKind::System, true, yum_installed, yum_check_updates, yum_apply_updates);
+define_simple_updater!(ZypperUpdater, "zypper", ModuleKind::System, true, zypper_installed, zypper_check_updates, zypper_apply_updates);
 define_simple_updater!(PacmanUpdater, "pacman", ModuleKind::System, true, pacman_installed, pacman_check_updates, pacman_apply_updates);
+define_simple_updater!(ApkUpdater, "apk", ModuleKind::System, true, apk_installed, apk_check_updates, apk_apply_updates);
+define_simple_updater!(XbpsUpdater, "xbps", ModuleKind::System, true, xbps_installed, xbps_check_updates, xbps_apply_updates);
+define_simple_updater!(EmergeUpdater, "emerge", ModuleKind::System, true, emerge_installed, emerge_check_updates, emerge_apply_updates);
+define_simple_updater!(FlatpakUpdater, "flatpak", ModuleKind::System, true, flatpak_installed, flatpak_check_updates, flatpak_apply_updates);
+define_simple_updater!(SnapUpdater, "snap", ModuleKind::System, true, snap_installed, snap_check_updates, snap_apply_updates);
+define_simple_updater!(PkconUpdater, "pkcon", ModuleKind::System, true, pkcon_installed, pkcon_check_updates, pkcon_apply_updates);
 define_simple_updater!(BrewUpdater, "brew", ModuleKind::System, true, brew_installed, brew_check_updates, brew_apply_updates);
 define_simple_updater!(RustupUpdater, "rustup", ModuleKind::Tool, false, installed_rustup, check_rustup_updates, apply_rustup_updates);
 define_simple_updater!(Msys2Updater, "msys2", ModuleKind::Tool, true, msys2_installed, msys2_check_updates, msys2_apply_updates);
 define_simple_updater!(PipUpdater, "pip", ModuleKind::Python, false, installed_pip, check_pip_updates, apply_pip_updates);
+define_simple_updater!(UvUpdater, "uv", ModuleKind::Python, false, uv_installed, check_uv_updates, apply_uv_updates);
 
 fn parse_winget_updates(text: &str) -> Vec<PackageUpdate> {
     text.lines()

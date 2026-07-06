@@ -319,6 +319,21 @@ impl GuiApp {
         }
     }
 
+    fn export_logs(&mut self) {
+        match export_logs_to_file(&self.logs) {
+            Ok(path) => {
+                let message = format!("Логи экспортированы: {}", path.display());
+                self.status_line = message.clone();
+                self.logs.push(format!("[info] {message}"));
+            }
+            Err(error) => {
+                let message = format!("Не удалось экспортировать логи: {error}");
+                self.status_line = message.clone();
+                self.logs.push(format!("[error] {message}"));
+            }
+        }
+    }
+
     fn show_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -461,8 +476,15 @@ impl GuiApp {
             });
     }
 
-    fn show_logs_tab(&self, ui: &mut egui::Ui) {
+    fn show_logs_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Console Log");
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Экспорт логов").clicked() {
+                self.export_logs();
+            }
+            ui.label(format!("Записей: {}", self.logs.len()));
+        });
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical()
@@ -608,6 +630,31 @@ fn save_gui_state(
     let text = serde_json::to_string_pretty(&state)?;
     fs::write(path, text)?;
     Ok(())
+}
+
+fn export_logs_to_file(logs: &[String]) -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir()
+        .map_err(|error| anyhow::anyhow!("не удалось определить рабочую директорию: {error}"))?;
+
+    let logs_dir = cwd.join("logs");
+    fs::create_dir_all(&logs_dir)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| anyhow::anyhow!("ошибка времени системы: {error}"))?
+        .as_secs();
+
+    let path = logs_dir.join(format!("update_all_modules_logs_{now}.txt"));
+    let content = if logs.is_empty() {
+        "Логи отсутствуют\n".to_owned()
+    } else {
+        let mut text = logs.join("\n");
+        text.push('\n');
+        text
+    };
+
+    fs::write(&path, content)?;
+    Ok(path)
 }
 
 pub fn launch_gui(filter: SelectionFilter, auto_yes: bool) -> anyhow::Result<()> {
