@@ -2,6 +2,7 @@ use crate::model::{ModuleKind, PackageUpdate};
 use crate::system;
 use crate::updater::{capture_command, command_exists, heuristic_parse_updates, stream_command, Updater, UpdaterError};
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 pub struct UpdaterDescriptor {
@@ -27,8 +28,13 @@ macro_rules! define_simple_updater {
                 $check_fn()
             }
 
-            fn apply_updates(&self, force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
-                $apply_fn(force_yes, log_sender)
+            fn apply_updates(
+                &self,
+                force_yes: bool,
+                selected_updates: &[PackageUpdate],
+                log_sender: &Sender<String>,
+            ) -> Result<(), UpdaterError> {
+                $apply_fn(force_yes, selected_updates, log_sender)
             }
         }
 
@@ -46,6 +52,7 @@ macro_rules! define_simple_updater {
 
 pub fn registry() -> Vec<UpdaterDescriptor> {
     vec![
+        WindowsUpdateUpdater::descriptor(),
         WingetUpdater::descriptor(),
         ChocolateyUpdater::descriptor(),
         AptUpdater::descriptor(),
@@ -115,8 +122,16 @@ fn parse_pip_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
         .collect())
 }
 
-fn apply_pip_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
-    let updates = parse_pip_updates()?;
+fn apply_pip_updates(
+    force_yes: bool,
+    selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let updates = if selected_updates.is_empty() {
+        parse_pip_updates()?
+    } else {
+        selected_updates.to_vec()
+    };
     if updates.is_empty() {
         let _ = log_sender.send("pip: обновления не найдены".to_owned());
         return Ok(());
@@ -138,7 +153,11 @@ fn check_pip_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     parse_pip_updates()
 }
 
-fn apply_rustup_updates(_force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+fn apply_rustup_updates(
+    _force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
     let args = vec!["update".to_owned()];
     let output = stream_command("rustup", &args, log_sender)?;
     if output.success {
@@ -168,6 +187,203 @@ fn winget_installed() -> bool {
     cfg!(target_os = "windows") && system::command_available("winget")
 }
 
+fn windows_update_installed() -> bool {
+    cfg!(target_os = "windows")
+        && (system::command_available("powershell") || system::command_available("pwsh"))
+}
+
+fn powershell_program() -> Option<&'static str> {
+    if system::command_available("powershell") {
+        Some("powershell")
+    } else if system::command_available("pwsh") {
+        Some("pwsh")
+    } else {
+        None
+    }
+}
+
+fn run_powershell_capture(script: &str) -> Result<crate::updater::CommandOutput, UpdaterError> {
+    let program = powershell_program()
+        .ok_or_else(|| UpdaterError::Message("powershell не найден".to_owned()))?;
+    let args = vec![
+        "-NoProfile".to_owned(),
+        "-NonInteractive".to_owned(),
+        "-ExecutionPolicy".to_owned(),
+        "Bypass".to_owned(),
+        "-Command".to_owned(),
+        script.to_owned(),
+    ];
+    capture_command(program, &args)
+}
+
+fn run_powershell_stream(
+    script: &str,
+    log_sender: &Sender<String>,
+) -> Result<crate::updater::CommandOutput, UpdaterError> {
+    let program = powershell_program()
+        .ok_or_else(|| UpdaterError::Message("powershell не найден".to_owned()))?;
+    let args = vec![
+        "-NoProfile".to_owned(),
+        "-NonInteractive".to_owned(),
+        "-ExecutionPolicy".to_owned(),
+        "Bypass".to_owned(),
+        "-Command".to_owned(),
+        script.to_owned(),
+    ];
+    stream_command(program, &args, log_sender)
+}
+
+fn windows_update_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    if !windows_update_installed() {
+        return Ok(Vec::new());
+    }
+
+    let script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+$session = New-Object -ComObject Microsoft.Update.Session
+$searcher = $session.CreateUpdateSearcher()
+$result = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+if ($result.Updates.Count -eq 0) { Write-Output '[]'; exit 0 }
+$items = @()
+for ($i = 0; $i -lt $result.Updates.Count; $i++) {
+    $u = $result.Updates.Item($i)
+    $items += [PSCustomObject]@{ title = $u.Title }
+}
+$items | ConvertTo-Json -Compress
+"#;
+
+    let output = run_powershell_capture(script)?;
+    if !output.success {
+        let program = powershell_program().unwrap_or("powershell");
+        return Err(UpdaterError::CommandFailed {
+            program: program.to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        });
+    }
+
+    parse_windows_update_items(&output.stdout)
+}
+
+fn windows_update_apply_updates(
+    _force_yes: bool,
+    selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    if !windows_update_installed() {
+        return Ok(());
+    }
+
+    let script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+$session = New-Object -ComObject Microsoft.Update.Session
+$searcher = $session.CreateUpdateSearcher()
+$searchResult = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+if ($searchResult.Updates.Count -eq 0) {
+    Write-Output 'Windows Update: обновления не найдены'
+    exit 0
+}
+
+$selected = @()
+if ('__SELECTED_UPDATES_JSON__' -ne '') {
+    $selected = '__SELECTED_UPDATES_JSON__' | ConvertFrom-Json
+}
+
+$updates = New-Object -ComObject Microsoft.Update.UpdateColl
+for ($i = 0; $i -lt $searchResult.Updates.Count; $i++) {
+    $candidate = $searchResult.Updates.Item($i)
+    if ($selected.Count -eq 0 -or $selected -contains $candidate.Title) {
+        [void]$updates.Add($candidate)
+    }
+}
+
+if ($updates.Count -eq 0) {
+    Write-Output 'Windows Update: по текущему выбору обновлений нет'
+    exit 0
+}
+
+Write-Output ("Windows Update: найдено обновлений: " + $updates.Count)
+$downloader = $session.CreateUpdateDownloader()
+$downloader.Updates = $updates
+[void]$downloader.Download()
+
+$installer = $session.CreateUpdateInstaller()
+$installer.Updates = $updates
+$installResult = $installer.Install()
+
+Write-Output ("Windows Update: код результата: " + [int]$installResult.ResultCode)
+if ($installResult.RebootRequired) {
+    Write-Output 'Windows Update: требуется перезагрузка системы'
+}
+
+if ([int]$installResult.ResultCode -gt 3) {
+    Write-Error 'Windows Update: установка завершилась с ошибкой'
+    exit 1
+}
+exit 0
+"#;
+
+    let selected_titles: Vec<String> = selected_updates
+        .iter()
+        .map(|update| {
+            update
+                .name
+                .strip_prefix("windows-update:")
+                .unwrap_or(update.name.as_str())
+                .to_owned()
+        })
+        .collect();
+    let selected_json = if selected_titles.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&selected_titles)?
+    };
+    let script = script.replace("__SELECTED_UPDATES_JSON__", &selected_json.replace('"', "''"));
+
+    let output = run_powershell_stream(&script, log_sender)?;
+    if output.success {
+        Ok(())
+    } else {
+        let program = powershell_program().unwrap_or("powershell");
+        Err(UpdaterError::CommandFailed {
+            program: program.to_owned(),
+            code: output.exit_code,
+            stderr: output.stderr,
+        })
+    }
+}
+
+fn parse_windows_update_items(text: &str) -> Result<Vec<PackageUpdate>, UpdaterError> {
+    #[derive(Debug, Deserialize)]
+    struct WindowsUpdateItem {
+        title: String,
+    }
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if trimmed == "[]" {
+        return Ok(Vec::new());
+    }
+
+    let items = if trimmed.starts_with('[') {
+        serde_json::from_str::<Vec<WindowsUpdateItem>>(trimmed)?
+    } else {
+        vec![serde_json::from_str::<WindowsUpdateItem>(trimmed)?]
+    };
+
+    Ok(items
+        .into_iter()
+        .map(|item| PackageUpdate::new(format!("windows-update:{}", item.title), "installed", "available"))
+        .collect())
+}
+
 fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     if !winget_installed() {
         return Ok(Vec::new());
@@ -176,21 +392,53 @@ fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     Ok(parse_winget_updates(&output.merged_text()))
 }
 
-fn winget_apply_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
-    let mut args = vec!["upgrade".to_owned(), "--all".to_owned(), "--include-unknown".to_owned(), "--accept-source-agreements".to_owned(), "--accept-package-agreements".to_owned()];
-    if force_yes {
-        args.push("--silent".to_owned());
+fn winget_apply_updates(
+    force_yes: bool,
+    selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    if selected_updates.is_empty() {
+        let mut args = vec!["upgrade".to_owned(), "--all".to_owned(), "--include-unknown".to_owned(), "--accept-source-agreements".to_owned(), "--accept-package-agreements".to_owned()];
+        if force_yes {
+            args.push("--silent".to_owned());
+        }
+        let output = stream_command("winget", &args, log_sender)?;
+        return if output.success {
+            Ok(())
+        } else {
+            Err(UpdaterError::CommandFailed {
+                program: "winget".to_owned(),
+                code: output.exit_code,
+                stderr: output.stderr,
+            })
+        };
     }
-    let output = stream_command("winget", &args, log_sender)?;
-    if output.success {
-        Ok(())
-    } else {
-        Err(UpdaterError::CommandFailed {
-            program: "winget".to_owned(),
-            code: output.exit_code,
-            stderr: output.stderr,
-        })
+
+    for update in selected_updates {
+        let name = update
+            .name
+            .strip_prefix("winget:")
+            .unwrap_or(update.name.as_str());
+        let mut args = vec![
+            "upgrade".to_owned(),
+            "--name".to_owned(),
+            name.to_owned(),
+            "--accept-source-agreements".to_owned(),
+            "--accept-package-agreements".to_owned(),
+        ];
+        if force_yes {
+            args.push("--silent".to_owned());
+        }
+        let output = stream_command("winget", &args, log_sender)?;
+        if !output.success {
+            return Err(UpdaterError::CommandFailed {
+                program: "winget".to_owned(),
+                code: output.exit_code,
+                stderr: output.stderr,
+            });
+        }
     }
+    Ok(())
 }
 
 fn chocolatey_installed() -> bool {
@@ -202,8 +450,24 @@ fn chocolatey_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     Ok(parse_choco_updates(&output.merged_text()))
 }
 
-fn chocolatey_apply_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
-    let mut args = vec!["upgrade".to_owned(), "all".to_owned()];
+fn chocolatey_apply_updates(
+    force_yes: bool,
+    selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = if selected_updates.is_empty() {
+        vec!["upgrade".to_owned(), "all".to_owned()]
+    } else {
+        let mut values = vec!["upgrade".to_owned()];
+        values.extend(selected_updates.iter().map(|update| {
+            update
+                .name
+                .strip_prefix("choco:")
+                .unwrap_or(update.name.as_str())
+                .to_owned()
+        }));
+        values
+    };
     if force_yes {
         args.push("--yes".to_owned());
     }
@@ -228,7 +492,11 @@ fn apt_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     Ok(heuristic_parse_updates("apt", &output.merged_text()))
 }
 
-fn apt_apply_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+fn apt_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
     let mut args = vec!["upgrade".to_owned()];
     if force_yes {
         args.push("-y".to_owned());
@@ -254,7 +522,11 @@ fn dnf_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     Ok(heuristic_parse_updates("dnf", &output.merged_text()))
 }
 
-fn dnf_apply_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+fn dnf_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
     let mut args = vec!["upgrade".to_owned()];
     if force_yes {
         args.push("-y".to_owned());
@@ -280,7 +552,11 @@ fn pacman_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     Ok(heuristic_parse_updates("pacman", &output.merged_text()))
 }
 
-fn pacman_apply_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+fn pacman_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
     let mut args = vec!["-Syu".to_owned()];
     if force_yes {
         args.push("--noconfirm".to_owned());
@@ -308,7 +584,11 @@ fn brew_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     Ok(heuristic_parse_updates("brew", &output.merged_text()))
 }
 
-fn brew_apply_updates(_force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+fn brew_apply_updates(
+    _force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
     let output = stream_command("brew", &vec!["upgrade".to_owned()], log_sender)?;
     if output.success {
         Ok(())
@@ -322,22 +602,26 @@ fn brew_apply_updates(_force_yes: bool, log_sender: &Sender<String>) -> Result<(
 }
 
 fn msys2_installed() -> bool {
-    cfg!(target_os = "windows") && system::command_available("pacman")
+    cfg!(target_os = "windows") && (msys2_bash_path().is_some() || system::command_available("pacman"))
 }
 
 fn msys2_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    let output = capture_command("pacman", &vec!["-Qu".to_owned()])?;
+    let output = msys2_capture_pacman(&["-Qu"])?;
     Ok(heuristic_parse_updates("msys2", &output.merged_text()))
 }
 
-fn msys2_apply_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
-    let mut args = vec!["-Syu".to_owned()];
+fn msys2_apply_updates(
+    force_yes: bool,
+    _selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut args = vec!["-Syu"];
     if force_yes {
-        args.push("--noconfirm".to_owned());
+        args.push("--noconfirm");
     } else {
-        args.push("--needed".to_owned());
+        args.push("--needed");
     }
-    let output = stream_command("pacman", &args, log_sender)?;
+    let output = msys2_stream_pacman(&args, log_sender)?;
     if output.success {
         Ok(())
     } else {
@@ -349,7 +633,61 @@ fn msys2_apply_updates(force_yes: bool, log_sender: &Sender<String>) -> Result<(
     }
 }
 
+fn msys2_root_candidates() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Some(root) = std::env::var_os("MSYS2_ROOT") {
+        roots.push(PathBuf::from(root));
+    }
+
+    roots.push(PathBuf::from("C:\\msys64"));
+    roots.push(PathBuf::from("C:\\tools\\msys64"));
+    roots
+}
+
+fn msys2_bash_path() -> Option<String> {
+    for root in msys2_root_candidates() {
+        let candidate = root.join("usr").join("bin").join("bash.exe");
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+fn msys2_capture_pacman(args: &[&str]) -> Result<crate::updater::CommandOutput, UpdaterError> {
+    if let Some(bash_path) = msys2_bash_path() {
+        let command = if args.is_empty() {
+            "pacman".to_owned()
+        } else {
+            format!("pacman {}", args.join(" "))
+        };
+        return capture_command(&bash_path, &["-lc".to_owned(), command]);
+    }
+
+    let fallback_args: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
+    capture_command("pacman", &fallback_args)
+}
+
+fn msys2_stream_pacman(
+    args: &[&str],
+    log_sender: &Sender<String>,
+) -> Result<crate::updater::CommandOutput, UpdaterError> {
+    if let Some(bash_path) = msys2_bash_path() {
+        let command = if args.is_empty() {
+            "pacman".to_owned()
+        } else {
+            format!("pacman {}", args.join(" "))
+        };
+        return stream_command(&bash_path, &["-lc".to_owned(), command], log_sender);
+    }
+
+    let fallback_args: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
+    stream_command("pacman", &fallback_args, log_sender)
+}
+
 define_simple_updater!(WingetUpdater, "winget", ModuleKind::System, true, winget_installed, winget_check_updates, winget_apply_updates);
+define_simple_updater!(WindowsUpdateUpdater, "windows-update", ModuleKind::System, true, windows_update_installed, windows_update_check_updates, windows_update_apply_updates);
 define_simple_updater!(ChocolateyUpdater, "choco", ModuleKind::System, true, chocolatey_installed, chocolatey_check_updates, chocolatey_apply_updates);
 define_simple_updater!(AptUpdater, "apt", ModuleKind::System, true, apt_installed, apt_check_updates, apt_apply_updates);
 define_simple_updater!(DnfUpdater, "dnf", ModuleKind::System, true, dnf_installed, dnf_check_updates, dnf_apply_updates);
@@ -440,4 +778,67 @@ fn split_columns_by_wide_spaces(line: &str) -> Vec<String> {
     }
 
     columns
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_columns_by_wide_spaces_splits_expected_columns() {
+        let line = "Git.Git         Git   2.45.0     2.46.0";
+        let columns = split_columns_by_wide_spaces(line);
+        assert_eq!(columns, vec!["Git.Git", "Git", "2.45.0", "2.46.0"]);
+    }
+
+    #[test]
+    fn parse_choco_updates_reads_limit_output_lines() {
+        let text = "\
+git|2.45.0|2.46.0|false\n\
+python|3.12.0|3.12.4|false\n\
+";
+
+        let updates = parse_choco_updates(text);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "choco:git");
+        assert_eq!(updates[0].current_version, "2.45.0");
+        assert_eq!(updates[0].available_version, "2.46.0");
+        assert_eq!(updates[1].name, "choco:python");
+    }
+
+    #[test]
+    fn parse_winget_updates_reads_table_lines() {
+        let text = "\
+Name             Id                    Version     Available\n\
+----------------------------------------------------------------\n\
+Git              Git.Git               2.45.0      2.46.0\n\
+Python 3.12      Python.Python.3.12    3.12.0      3.12.4\n\
+";
+
+        let updates = parse_winget_updates(text);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "winget:Git");
+        assert_eq!(updates[0].current_version, "2.45.0");
+        assert_eq!(updates[0].available_version, "2.46.0");
+        assert_eq!(updates[1].name, "winget:Python 3.12");
+    }
+
+    #[test]
+    fn parse_windows_update_items_handles_array_and_single_object() {
+        let array = r#"[{"title":"Cumulative Update for Windows 11"}]"#;
+        let updates = parse_windows_update_items(array).expect("array json should parse");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].name,
+            "windows-update:Cumulative Update for Windows 11"
+        );
+
+        let object = r#"{"title":"Security Update KB5000001"}"#;
+        let updates = parse_windows_update_items(object).expect("object json should parse");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].name,
+            "windows-update:Security Update KB5000001"
+        );
+    }
 }

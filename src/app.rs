@@ -152,10 +152,26 @@ pub fn run_updates(modules: &[ModuleSnapshot], force_yes: bool, log_sender: &Sen
             continue;
         }
 
+        let selected_updates: Vec<_> = module
+            .updates
+            .iter()
+            .filter(|update| update.selected)
+            .cloned()
+            .collect();
+        if module.status.has_updates() && !module.updates.is_empty() && selected_updates.is_empty() {
+            let _ = log_sender.send(format!(
+                "Пропуск {}: все обновления внутри модуля сняты",
+                module.name
+            ));
+            continue;
+        }
+
         let _ = log_sender.send(format!("Запуск обновления: {}", module.name));
 
         let outcome = match lookup_updater(&module.name) {
-            Some(descriptor) => descriptor.updater.apply_updates(force_yes, log_sender),
+            Some(descriptor) => descriptor
+                .updater
+                .apply_updates(force_yes, &selected_updates, log_sender),
             None => Err(UpdaterError::Message(format!("{}: обработчик не найден", module.name))),
         };
 
@@ -169,4 +185,185 @@ pub fn run_updates(modules: &[ModuleSnapshot], force_yes: bool, log_sender: &Sen
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::PackageUpdate;
+
+    struct FakeUpdater {
+        name: &'static str,
+        installed: bool,
+        updates: Vec<PackageUpdate>,
+        fail_message: Option<String>,
+    }
+
+    impl Updater for FakeUpdater {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn is_installed(&self) -> bool {
+            self.installed
+        }
+
+        fn check_updates(&self) -> Result<Vec<PackageUpdate>, UpdaterError> {
+            if let Some(message) = &self.fail_message {
+                return Err(UpdaterError::Message(message.clone()));
+            }
+            Ok(self.updates.clone())
+        }
+
+        fn apply_updates(
+            &self,
+            _force_yes: bool,
+            _selected_updates: &[PackageUpdate],
+            _log_sender: &Sender<String>,
+        ) -> Result<(), UpdaterError> {
+            Ok(())
+        }
+    }
+
+    fn make_descriptor(name: &'static str, kind: ModuleKind) -> UpdaterDescriptor {
+        UpdaterDescriptor {
+            updater: Box::new(FakeUpdater {
+                name,
+                installed: true,
+                updates: Vec::new(),
+                fail_message: None,
+            }),
+            kind,
+            requires_elevation: false,
+        }
+    }
+
+    #[test]
+    fn includes_descriptor_respects_skip_and_only_flags() {
+        let system = make_descriptor("winget", ModuleKind::System);
+        let tool = make_descriptor("rustup", ModuleKind::Tool);
+        let python = make_descriptor("pip", ModuleKind::Python);
+
+        let mut filter = SelectionFilter::default();
+        assert!(filter.includes_descriptor(&system));
+        assert!(filter.includes_descriptor(&tool));
+        assert!(filter.includes_descriptor(&python));
+
+        filter.skip_system = true;
+        assert!(!filter.includes_descriptor(&system));
+        assert!(filter.includes_descriptor(&tool));
+
+        filter.skip_tools = true;
+        assert!(!filter.includes_descriptor(&tool));
+
+        filter.skip_pip = true;
+        assert!(!filter.includes_descriptor(&python));
+
+        filter = SelectionFilter::default();
+        filter.only_tools = true;
+        assert!(filter.includes_descriptor(&tool));
+        assert!(!filter.includes_descriptor(&system));
+
+        filter.only_tools = false;
+        filter.only.insert("pip".to_owned());
+        assert!(!filter.includes_descriptor(&tool));
+        assert!(filter.includes_descriptor(&python));
+    }
+
+    #[test]
+    fn scan_updater_sets_not_found_when_not_installed() {
+        let updater = FakeUpdater {
+            name: "fake",
+            installed: false,
+            updates: Vec::new(),
+            fail_message: None,
+        };
+
+        let snapshot = scan_updater(&updater, ModuleKind::Tool, false);
+        assert!(!snapshot.installed);
+        assert!(matches!(snapshot.status, ModuleStatus::NotFound));
+    }
+
+    #[test]
+    fn scan_updater_sets_up_to_date_and_updates_available() {
+        let up_to_date = FakeUpdater {
+            name: "fake-up-to-date",
+            installed: true,
+            updates: Vec::new(),
+            fail_message: None,
+        };
+
+        let snapshot = scan_updater(&up_to_date, ModuleKind::Tool, false);
+        assert!(snapshot.installed);
+        assert!(matches!(snapshot.status, ModuleStatus::UpToDate));
+
+        let with_updates = FakeUpdater {
+            name: "fake-with-updates",
+            installed: true,
+            updates: vec![PackageUpdate::new("pkg", "1.0", "1.1")],
+            fail_message: None,
+        };
+
+        let snapshot = scan_updater(&with_updates, ModuleKind::Tool, false);
+        assert!(matches!(snapshot.status, ModuleStatus::UpdatesAvailable(1)));
+        assert_eq!(snapshot.updates.len(), 1);
+    }
+
+    #[test]
+    fn scan_updater_sets_error_status_on_failure() {
+        let updater = FakeUpdater {
+            name: "fake-error",
+            installed: true,
+            updates: Vec::new(),
+            fail_message: Some("boom".to_owned()),
+        };
+
+        let snapshot = scan_updater(&updater, ModuleKind::Tool, false);
+        assert!(matches!(snapshot.status, ModuleStatus::Error(_)));
+        assert!(snapshot.status_label().contains("boom"));
+    }
+
+    #[test]
+    fn run_updates_skips_ineligible_modules_and_reports_missing_handler() {
+        let mut skipped_not_selected = ModuleSnapshot::new("m1", ModuleKind::Tool, false);
+        skipped_not_selected.selected = false;
+        skipped_not_selected.installed = true;
+        skipped_not_selected.status = ModuleStatus::UpdatesAvailable(1);
+
+        let mut skipped_not_installed = ModuleSnapshot::new("m2", ModuleKind::Tool, false);
+        skipped_not_installed.selected = true;
+        skipped_not_installed.installed = false;
+        skipped_not_installed.status = ModuleStatus::UpdatesAvailable(1);
+
+        let mut skipped_no_updates = ModuleSnapshot::new("m3", ModuleKind::Tool, false);
+        skipped_no_updates.selected = true;
+        skipped_no_updates.installed = true;
+        skipped_no_updates.status = ModuleStatus::UpToDate;
+
+        let mut missing_handler = ModuleSnapshot::new("missing-updater", ModuleKind::Tool, false);
+        missing_handler.selected = true;
+        missing_handler.installed = true;
+        missing_handler.status = ModuleStatus::UpdatesAvailable(1);
+
+        let modules = vec![
+            skipped_not_selected,
+            skipped_not_installed,
+            skipped_no_updates,
+            missing_handler,
+        ];
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let results = run_updates(&modules, true, &tx);
+        drop(tx);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "missing-updater");
+        assert!(results[0].1.is_err());
+
+        let logs: Vec<String> = rx.iter().collect();
+        assert!(logs.iter().any(|line| line.contains("модуль не выбран")));
+        assert!(logs.iter().any(|line| line.contains("инструмент не установлен")));
+        assert!(logs.iter().any(|line| line.contains("обновления не требуются")));
+        assert!(logs.iter().any(|line| line.contains("обработчик не найден")));
+    }
 }

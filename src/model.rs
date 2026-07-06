@@ -10,6 +10,7 @@ pub struct PackageUpdate {
     pub name: String,
     pub current_version: String,
     pub available_version: String,
+    pub selected: bool,
 }
 
 impl PackageUpdate {
@@ -18,6 +19,7 @@ impl PackageUpdate {
             name: name.into(),
             current_version: current_version.into(),
             available_version: available_version.into(),
+            selected: true,
         }
     }
 }
@@ -87,5 +89,43 @@ impl ModuleSnapshot {
                 )
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_labels_and_has_updates_are_consistent() {
+        assert_eq!(ModuleStatus::NotFound.label(), "Не найден в системе");
+        assert_eq!(ModuleStatus::UpToDate.label(), "Актуален");
+        assert_eq!(
+            ModuleStatus::UpdatesAvailable(3).label(),
+            "Доступны обновления (3 пакетов)"
+        );
+        assert!(ModuleStatus::UpdatesAvailable(1).has_updates());
+        assert!(!ModuleStatus::UpToDate.has_updates());
+    }
+
+    #[test]
+    fn detail_lines_returns_placeholder_when_no_updates() {
+        let module = ModuleSnapshot::new("pip", ModuleKind::Python, false);
+        let details = module.detail_lines();
+        assert_eq!(details, vec!["Список конкретных обновлений пуст".to_owned()]);
+    }
+
+    #[test]
+    fn detail_lines_formats_updates() {
+        let mut module = ModuleSnapshot::new("pip", ModuleKind::Python, false);
+        module.updates = vec![
+            PackageUpdate::new("requests", "2.31.0", "2.32.0"),
+            PackageUpdate::new("urllib3", "2.0.0", "2.1.0"),
+        ];
+
+        let details = module.detail_lines();
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0], "requests: 2.31.0 -> 2.32.0");
+        assert_eq!(details[1], "urllib3: 2.0.0 -> 2.1.0");
     }
 }

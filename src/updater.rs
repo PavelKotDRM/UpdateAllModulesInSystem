@@ -11,7 +11,12 @@ pub trait Updater: Send + Sync {
     fn name(&self) -> &'static str;
     fn is_installed(&self) -> bool;
     fn check_updates(&self) -> Result<Vec<PackageUpdate>, UpdaterError>;
-    fn apply_updates(&self, force_yes: bool, log_sender: &Sender<String>) -> Result<(), UpdaterError>;
+    fn apply_updates(
+        &self,
+        force_yes: bool,
+        selected_updates: &[PackageUpdate],
+        log_sender: &Sender<String>,
+    ) -> Result<(), UpdaterError>;
 }
 
 #[derive(Debug, Error)]
@@ -270,4 +275,59 @@ fn parse_update_line(manager: &'static str, line: &str) -> Option<PackageUpdate>
     let current = tokens.get(1).copied().unwrap_or("?");
     let available = tokens.get(2).copied().unwrap_or("?");
     Some(PackageUpdate::new(format!("{manager}:{name_token}"), current, available))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_output_merges_streams_correctly() {
+        let output = CommandOutput {
+            stdout: "line1".to_owned(),
+            stderr: "line2".to_owned(),
+            exit_code: Some(0),
+            success: true,
+        };
+        assert_eq!(output.merged_text(), "line1\nline2");
+
+        let only_stdout = CommandOutput {
+            stdout: "ok".to_owned(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+        };
+        assert_eq!(only_stdout.merged_text(), "ok");
+
+        let only_stderr = CommandOutput {
+            stdout: String::new(),
+            stderr: "err".to_owned(),
+            exit_code: Some(1),
+            success: false,
+        };
+        assert_eq!(only_stderr.merged_text(), "err");
+    }
+
+    #[test]
+    fn decode_bytes_reads_utf8_text() {
+        let bytes = "Привет".as_bytes();
+        assert_eq!(decode_bytes(bytes), "Привет");
+    }
+
+    #[test]
+    fn heuristic_parse_updates_skips_noise_and_parses_packages() {
+        let text = "\
+warning: mirror\n\
+package old new\n\
+foo 1.0 1.2\n\
+bar 2.0 3.0\n\
+";
+
+        let updates = heuristic_parse_updates("apt", text);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "apt:foo");
+        assert_eq!(updates[0].current_version, "1.0");
+        assert_eq!(updates[0].available_version, "1.2");
+        assert_eq!(updates[1].name, "apt:bar");
+    }
 }

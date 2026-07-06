@@ -1,9 +1,9 @@
 use crate::app::{discover_modules, run_updates, SelectionFilter};
-use crate::model::{ModuleKind, ModuleSnapshot};
+use crate::model::ModuleSnapshot;
 use crate::system;
 use eframe::{egui, App, Frame, NativeOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -15,6 +15,8 @@ const GUI_STATE_FILE: &str = ".update_all_modules_gui_state.json";
 struct GuiState {
     selected_modules: Vec<String>,
     auto_yes: Option<bool>,
+    show_not_found: Option<bool>,
+    selected_updates: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -44,7 +46,9 @@ pub struct GuiApp {
     status_line: String,
     started_scan: bool,
     persisted_selection: BTreeSet<String>,
+    persisted_update_selection: BTreeMap<String, BTreeSet<String>>,
     active_tab: GuiTab,
+    show_not_found: bool,
 }
 
 impl GuiApp {
@@ -53,7 +57,13 @@ impl GuiApp {
         let persisted_state = load_gui_state();
         let persisted_selection: BTreeSet<String> =
             persisted_state.selected_modules.iter().cloned().collect();
+        let persisted_update_selection: BTreeMap<String, BTreeSet<String>> = persisted_state
+            .selected_updates
+            .into_iter()
+            .map(|(module, updates)| (module, updates.into_iter().collect()))
+            .collect();
         let auto_yes = persisted_state.auto_yes.unwrap_or(auto_yes);
+        let show_not_found = persisted_state.show_not_found.unwrap_or(false);
         let mut app = Self {
             filter,
             events_tx,
@@ -65,7 +75,9 @@ impl GuiApp {
             status_line: String::from("Ожидание запуска"),
             started_scan: false,
             persisted_selection,
+            persisted_update_selection,
             active_tab: GuiTab::Overview,
+            show_not_found,
         };
         app.start_scan();
         app
@@ -116,23 +128,24 @@ impl GuiApp {
         });
     }
 
+    fn start_update_all(&mut self) {
+        if self.busy {
+            return;
+        }
+
+        for module in &mut self.modules {
+            module.selected = true;
+            for update in &mut module.updates {
+                update.selected = true;
+            }
+        }
+        self.persist_state();
+        self.start_update();
+    }
+
     fn select_only_updates(&mut self) {
         for module in &mut self.modules {
             module.selected = module.installed && module.status.has_updates();
-        }
-        self.persist_state();
-    }
-
-    fn select_all(&mut self) {
-        for module in &mut self.modules {
-            module.selected = true;
-        }
-        self.persist_state();
-    }
-
-    fn select_by_kind(&mut self, kind: ModuleKind) {
-        for module in &mut self.modules {
-            module.selected = module.kind == kind;
         }
         self.persist_state();
     }
@@ -144,32 +157,110 @@ impl GuiApp {
         self.persist_state();
     }
 
-    fn clear_selection(&mut self) {
-        for module in &mut self.modules {
-            module.selected = false;
-        }
-        self.persist_state();
-    }
-
     fn selected_count(&self) -> usize {
-        self.modules.iter().filter(|module| module.selected).count()
+        self.modules
+            .iter()
+            .filter(|module| self.is_module_visible(module) && module.selected)
+            .count()
     }
 
     fn updates_count(&self) -> usize {
         self.modules
             .iter()
-            .filter(|module| module.installed && module.status.has_updates())
+            .filter(|module| {
+                self.is_module_visible(module) && module.installed && module.status.has_updates()
+            })
             .count()
     }
 
     fn apply_persisted_selection(&mut self) {
         if self.persisted_selection.is_empty() {
+            for module in &mut self.modules {
+                if let Some(saved_updates) = self.persisted_update_selection.get(&module.name) {
+                    for update in &mut module.updates {
+                        update.selected = saved_updates.contains(&update.name);
+                    }
+                }
+            }
             return;
         }
 
         for module in &mut self.modules {
             module.selected = self.persisted_selection.contains(&module.name);
+            if let Some(saved_updates) = self.persisted_update_selection.get(&module.name) {
+                for update in &mut module.updates {
+                    update.selected = saved_updates.contains(&update.name);
+                }
+            }
         }
+    }
+
+    fn is_module_visible(&self, module: &ModuleSnapshot) -> bool {
+        self.show_not_found || module.installed
+    }
+
+    fn visible_modules_count(&self) -> usize {
+        self.modules
+            .iter()
+            .filter(|module| self.is_module_visible(module))
+            .count()
+    }
+
+    fn show_selection_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Выбор модулей", |ui| {
+            if ui.button("Отметить все видимые").clicked() {
+                for module in &mut self.modules {
+                    if self.show_not_found || module.installed {
+                        module.selected = true;
+                        for update in &mut module.updates {
+                            update.selected = true;
+                        }
+                    }
+                }
+                self.persist_state();
+                ui.close();
+            }
+
+            if ui.button("Снять выбор с видимых").clicked() {
+                for module in &mut self.modules {
+                    if self.show_not_found || module.installed {
+                        module.selected = false;
+                        for update in &mut module.updates {
+                            update.selected = false;
+                        }
+                    }
+                }
+                self.persist_state();
+                ui.close();
+            }
+
+            if ui.button("Инвертировать выбор").clicked() {
+                self.invert_selection();
+                ui.close();
+            }
+
+            if ui.button("Выбрать только с обновлениями").clicked() {
+                self.select_only_updates();
+                ui.close();
+            }
+
+            ui.separator();
+
+            let mut selection_changed = false;
+            for module in &mut self.modules {
+                if !self.show_not_found && !module.installed {
+                    continue;
+                }
+                let label = format!("{} ({})", module.name, module.status_label());
+                if ui.checkbox(&mut module.selected, label).changed() {
+                    selection_changed = true;
+                }
+            }
+
+            if selection_changed {
+                self.persist_state();
+            }
+        });
     }
 
     fn persist_state(&mut self) {
@@ -180,7 +271,28 @@ impl GuiApp {
             .map(|module| module.name.clone())
             .collect();
 
-        if let Err(error) = save_gui_state(&self.persisted_selection, self.auto_yes) {
+        self.persisted_update_selection = self
+            .modules
+            .iter()
+            .map(|module| {
+                let selected_updates = module
+                    .updates
+                    .iter()
+                    .filter(|update| update.selected)
+                    .map(|update| update.name.clone())
+                    .collect::<BTreeSet<_>>();
+                (module.name.clone(), selected_updates)
+            })
+            .collect();
+
+        if let Err(error) =
+            save_gui_state(
+                &self.persisted_selection,
+                &self.persisted_update_selection,
+                self.auto_yes,
+                self.show_not_found,
+            )
+        {
             self.logs
                 .push(format!("Не удалось сохранить состояние GUI: {error}"));
         }
@@ -198,7 +310,10 @@ impl GuiApp {
                 }
                 GuiEvent::UpdateFinished(message) => {
                     self.busy = false;
+                    self.logs.push(format!("[summary] {message}"));
                     self.status_line = message;
+                    self.started_scan = false;
+                    self.start_scan();
                 }
             }
         }
@@ -222,53 +337,15 @@ impl GuiApp {
             }
 
             if ui
-                .add_enabled(!self.busy, egui::Button::new("Выбрать все"))
+                .add_enabled(!self.busy, egui::Button::new("Обновить все"))
                 .clicked()
             {
-                self.select_all();
+                self.start_update_all();
             }
 
-            if ui
-                .add_enabled(!self.busy, egui::Button::new("Только системные"))
-                .clicked()
-            {
-                self.select_by_kind(ModuleKind::System);
-            }
-
-            if ui
-                .add_enabled(!self.busy, egui::Button::new("Только инструменты"))
-                .clicked()
-            {
-                self.select_by_kind(ModuleKind::Tool);
-            }
-
-            if ui
-                .add_enabled(!self.busy, egui::Button::new("Только Python"))
-                .clicked()
-            {
-                self.select_by_kind(ModuleKind::Python);
-            }
-
-            if ui
-                .add_enabled(!self.busy, egui::Button::new("Инвертировать выбор"))
-                .clicked()
-            {
-                self.invert_selection();
-            }
-
-            if ui
-                .add_enabled(!self.busy, egui::Button::new("Выбрать с обновлениями"))
-                .clicked()
-            {
-                self.select_only_updates();
-            }
-
-            if ui
-                .add_enabled(!self.busy, egui::Button::new("Снять выбор"))
-                .clicked()
-            {
-                self.clear_selection();
-            }
+            ui.add_enabled_ui(!self.busy, |ui| {
+                self.show_selection_menu(ui);
+            });
 
             let auto_yes_response =
                 ui.checkbox(&mut self.auto_yes, "Автоматическое согласие (-y)");
@@ -291,13 +368,13 @@ impl GuiApp {
             ui.label(format!(
                 "Выбрано модулей: {}/{}",
                 self.selected_count(),
-                self.modules.len()
+                self.visible_modules_count()
             ));
             ui.separator();
             ui.label(format!(
                 "С обновлениями: {}/{}",
                 self.updates_count(),
-                self.modules.len()
+                self.visible_modules_count()
             ));
             });
     }
@@ -315,7 +392,7 @@ impl GuiApp {
         }
 
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!("Найдено модулей: {}", self.modules.len()));
+            ui.label(format!("Найдено модулей: {}", self.visible_modules_count()));
             ui.separator();
             ui.label(format!("Выбрано: {}", self.selected_count()));
             ui.separator();
@@ -350,16 +427,30 @@ impl GuiApp {
                 let available_width = ui.available_width();
                 let columns = ((available_width / 420.0).floor() as usize).clamp(1, 3);
                 let mut selection_changed = false;
+                let visible_count = self.visible_modules_count();
+
+                if visible_count == 0 {
+                    ui.label("Нет отображаемых модулей. Включите показ не найденных в настройках или выполните сканирование.");
+                    return;
+                }
 
                 if columns == 1 {
                     for module in &mut self.modules {
+                        if !self.show_not_found && !module.installed {
+                            continue;
+                        }
                         Self::render_module_card(ui, module, &mut selection_changed);
                     }
                 } else {
                     ui.columns(columns, |columns_ui| {
-                        for (index, module) in self.modules.iter_mut().enumerate() {
-                            let column = &mut columns_ui[index % columns];
+                        let mut visible_index = 0usize;
+                        for module in &mut self.modules {
+                            if !self.show_not_found && !module.installed {
+                                continue;
+                            }
+                            let column = &mut columns_ui[visible_index % columns];
                             Self::render_module_card(column, module, &mut selection_changed);
+                            visible_index += 1;
                         }
                     });
                 }
@@ -401,8 +492,16 @@ impl GuiApp {
             self.persist_state();
         }
 
+        let show_not_found_response = ui.checkbox(
+            &mut self.show_not_found,
+            "Показывать не найденные модули",
+        );
+        if show_not_found_response.changed() {
+            self.persist_state();
+        }
+
         ui.add_space(8.0);
-        ui.label("Состояние выбранных модулей и настройка автосогласия сохраняются между запусками.");
+        ui.label("Состояние выбранных модулей и настройки отображения сохраняются между запусками.");
     }
 
     fn render_module_card(
@@ -423,11 +522,31 @@ impl GuiApp {
             ui.label(module.status_label());
 
             if !module.updates.is_empty() {
+                let selected_updates_count = module
+                    .updates
+                    .iter()
+                    .filter(|update| update.selected)
+                    .count();
+                ui.small(format!(
+                    "Выбрано приложений: {}/{}",
+                    selected_updates_count,
+                    module.updates.len()
+                ));
+
                 egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
                     .default_open(false)
                     .show(ui, |ui| {
-                        for line in module.detail_lines() {
-                            ui.label(line);
+                        for update in &mut module.updates {
+                            ui.horizontal_wrapped(|ui| {
+                                let response = ui.checkbox(&mut update.selected, "");
+                                if response.changed() {
+                                    *selection_changed = true;
+                                }
+                                ui.label(format!(
+                                    "{}: {} -> {}",
+                                    update.name, update.current_version, update.available_version
+                                ));
+                            });
                         }
                     });
             }
@@ -472,11 +591,21 @@ fn load_gui_state() -> GuiState {
     serde_json::from_str::<GuiState>(&text).unwrap_or_default()
 }
 
-fn save_gui_state(selection: &BTreeSet<String>, auto_yes: bool) -> anyhow::Result<()> {
+fn save_gui_state(
+    selection: &BTreeSet<String>,
+    selected_updates: &BTreeMap<String, BTreeSet<String>>,
+    auto_yes: bool,
+    show_not_found: bool,
+) -> anyhow::Result<()> {
     let path = gui_state_path().ok_or_else(|| anyhow::anyhow!("не удалось определить рабочую директорию"))?;
     let state = GuiState {
         selected_modules: selection.iter().cloned().collect(),
         auto_yes: Some(auto_yes),
+        show_not_found: Some(show_not_found),
+        selected_updates: selected_updates
+            .iter()
+            .map(|(module, updates)| (module.clone(), updates.iter().cloned().collect()))
+            .collect(),
     };
     let text = serde_json::to_string_pretty(&state)?;
     fs::write(path, text)?;
