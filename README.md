@@ -118,6 +118,22 @@ cargo run
 cargo run -- --check
 ```
 
+## CI/CD
+
+В репозитории настроены GitHub Actions workflows:
+
+- CI: на каждом `push` в `main` / `master` и на каждом `pull_request` запускаются тесты и release-сборка на Windows, Linux и macOS.
+- Release: при пуше тега формата `v*` автоматически собираются артефакты для Windows, Linux и macOS и публикуются в GitHub Releases.
+
+Пример публикации релиза:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+После этого в GitHub Releases появятся собранные бинарные архивы для поддерживаемых платформ.
+
 ## Технические детали
 
 - Язык: Rust 2021.
