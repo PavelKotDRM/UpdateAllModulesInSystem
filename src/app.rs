@@ -1,12 +1,12 @@
 use crate::model::{ModuleKind, ModuleSnapshot, ModuleStatus};
 use crate::system;
 use crate::updater::{Updater, UpdaterError};
-use crate::updaters::{lookup_updater, registry, UpdaterDescriptor};
+use crate::updaters::{registry, UpdaterDescriptor};
 use comfy_table::{presets::UTF8_FULL, ContentArrangement, Table};
 use std::collections::BTreeSet;
 use std::sync::mpsc::Sender;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SelectionFilter {
     pub skip_system: bool,
     pub skip_pip: bool,
@@ -38,18 +38,6 @@ impl SelectionFilter {
         }
 
         true
-    }
-}
-
-impl Default for SelectionFilter {
-    fn default() -> Self {
-        Self {
-            skip_system: false,
-            skip_pip: false,
-            skip_tools: false,
-            only_tools: false,
-            only: BTreeSet::new(),
-        }
     }
 }
 
@@ -135,43 +123,28 @@ pub fn summarize_elevation_warning(modules: &[ModuleSnapshot]) -> Option<String>
 
 pub fn run_updates(modules: &[ModuleSnapshot], force_yes: bool, log_sender: &Sender<String>) -> Vec<(String, Result<(), UpdaterError>)> {
     let mut results = Vec::new();
+    let handlers = registry()
+        .into_iter()
+        .map(|descriptor| (descriptor.updater.name().to_owned(), descriptor.updater))
+        .collect::<std::collections::BTreeMap<_, _>>();
 
     for module in modules {
-        if !module.selected {
-            let _ = log_sender.send(format!("Пропуск {}: модуль не выбран", module.name));
-            continue;
-        }
-
-        if !module.installed {
-            let _ = log_sender.send(format!("Пропуск {}: инструмент не установлен", module.name));
-            continue;
-        }
-
-        if !module.status.has_updates() {
-            let _ = log_sender.send(format!("Пропуск {}: обновления не требуются", module.name));
-            continue;
-        }
-
         let selected_updates: Vec<_> = module
             .updates
             .iter()
             .filter(|update| update.selected)
             .cloned()
             .collect();
-        if module.status.has_updates() && !module.updates.is_empty() && selected_updates.is_empty() {
-            let _ = log_sender.send(format!(
-                "Пропуск {}: все обновления внутри модуля сняты",
-                module.name
-            ));
+
+        if let Some(reason) = skip_update_reason(module, &selected_updates) {
+            let _ = log_sender.send(format!("Пропуск {}: {}", module.name, reason));
             continue;
         }
 
         let _ = log_sender.send(format!("Запуск обновления: {}", module.name));
 
-        let outcome = match lookup_updater(&module.name) {
-            Some(descriptor) => descriptor
-                .updater
-                .apply_updates(force_yes, &selected_updates, log_sender),
+        let outcome = match handlers.get(&module.name) {
+            Some(updater) => updater.apply_updates(force_yes, &selected_updates, log_sender),
             None => Err(UpdaterError::Message(format!("{}: обработчик не найден", module.name))),
         };
 
@@ -185,6 +158,29 @@ pub fn run_updates(modules: &[ModuleSnapshot], force_yes: bool, log_sender: &Sen
     }
 
     results
+}
+
+fn skip_update_reason(
+    module: &ModuleSnapshot,
+    selected_updates: &[crate::model::PackageUpdate],
+) -> Option<&'static str> {
+    if !module.selected {
+        return Some("модуль не выбран");
+    }
+
+    if !module.installed {
+        return Some("инструмент не установлен");
+    }
+
+    if !module.status.has_updates() {
+        return Some("обновления не требуются");
+    }
+
+    if !module.updates.is_empty() && selected_updates.is_empty() {
+        return Some("все обновления внутри модуля сняты");
+    }
+
+    None
 }
 
 #[cfg(test)]

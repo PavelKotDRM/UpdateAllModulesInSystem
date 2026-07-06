@@ -18,12 +18,7 @@ fn main() -> Result<()> {
 
     system::hide_windows_console_if_needed(gui_mode);
 
-    let mut filter = app::SelectionFilter::default();
-    filter.skip_system = cli.skip_system;
-    filter.skip_pip = cli.skip_pip;
-    filter.skip_tools = cli.skip_tools;
-    filter.only_tools = cli.only_tools;
-    filter.only = cli.only.clone().into_iter().collect::<BTreeSet<_>>();
+    let filter = build_selection_filter(&cli);
 
     if gui_mode {
         gui::launch_gui(filter, cli.yes)?;
@@ -31,6 +26,16 @@ fn main() -> Result<()> {
     }
 
     run_cli(cli, filter)
+}
+
+fn build_selection_filter(cli: &Cli) -> app::SelectionFilter {
+    app::SelectionFilter {
+        skip_system: cli.skip_system,
+        skip_pip: cli.skip_pip,
+        skip_tools: cli.skip_tools,
+        only_tools: cli.only_tools,
+        only: cli.only.clone().into_iter().collect::<BTreeSet<_>>(),
+    }
 }
 
 fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<()> {

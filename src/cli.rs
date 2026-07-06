@@ -28,7 +28,7 @@ pub struct Cli {
     #[arg(long = "skip-tools")]
     pub skip_tools: bool,
 
-    #[arg(long = "only-tools")]
+    #[arg(long = "only-tools", conflicts_with = "skip_tools")]
     pub only_tools: bool,
 
     #[arg(long = "only", value_name = "NAME")]
@@ -68,5 +68,15 @@ mod tests {
         assert!(cli.gui);
         assert!(cli.only_tools);
         assert_eq!(cli.only, vec!["pip".to_owned(), "rustup".to_owned()]);
+    }
+
+    #[test]
+    fn rejects_conflicting_tool_filters() {
+        let result = Cli::try_parse_from([
+            "update_all_modules",
+            "--skip-tools",
+            "--only-tools",
+        ]);
+        assert!(result.is_err());
     }
 }

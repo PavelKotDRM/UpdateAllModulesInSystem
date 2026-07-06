@@ -397,11 +397,7 @@ impl GuiApp {
     fn show_overview_tab(&self, ui: &mut egui::Ui) {
         ui.heading("Сводка");
         ui.add_space(4.0);
-        if let Some(warning) = if system::should_warn_about_elevation() {
-            Some("Запуск без прав администратора: системные менеджеры могут быть недоступны")
-        } else {
-            None
-        } {
+        if let Some(warning) = self.elevation_warning_text() {
             ui.colored_label(egui::Color32::YELLOW, warning);
             ui.add_space(4.0);
         }
@@ -421,11 +417,7 @@ impl GuiApp {
     }
 
     fn show_modules_tab(&mut self, ui: &mut egui::Ui) {
-        if let Some(warning) = if system::should_warn_about_elevation() {
-            Some("Запуск без прав администратора: системные менеджеры могут быть недоступны")
-        } else {
-            None
-        } {
+        if let Some(warning) = self.elevation_warning_text() {
             ui.colored_label(egui::Color32::YELLOW, warning);
             ui.add_space(6.0);
         }
@@ -559,7 +551,7 @@ impl GuiApp {
                 egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
                     .default_open(false)
                     .show(ui, |ui| {
-                        for (update, detail_line) in module.updates.iter_mut().zip(detail_lines.into_iter()) {
+                        for (update, detail_line) in module.updates.iter_mut().zip(detail_lines) {
                             ui.horizontal_wrapped(|ui| {
                                 let response = ui.checkbox(&mut update.selected, "");
                                 if response.changed() {
@@ -571,6 +563,14 @@ impl GuiApp {
                     });
             }
         });
+    }
+
+    fn elevation_warning_text(&self) -> Option<&'static str> {
+        if system::should_warn_about_elevation() {
+            Some("Запуск без прав администратора: системные менеджеры могут быть недоступны")
+        } else {
+            None
+        }
     }
 }
 
