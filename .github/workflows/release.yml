@@ -28,11 +28,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
             binary_name: update_all_modules
-          - name: macos-x86_64
-            os: macos-13
-            target: x86_64-apple-darwin
-            archive_ext: tar.gz
-            binary_name: update_all_modules
 
     steps:
       - name: Checkout repository
