@@ -1,3 +1,5 @@
+//! Парсеры текстового и JSON-вывода внешних менеджеров пакетов.
+
 use crate::model::PackageUpdate;
 use crate::updater::UpdaterError;
 use serde::Deserialize;

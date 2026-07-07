@@ -1,3 +1,5 @@
+//! Обновляторы системных менеджеров пакетов Unix/Linux и Homebrew.
+
 use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{capture_command, heuristic_parse_updates, stream_command, UpdaterError};

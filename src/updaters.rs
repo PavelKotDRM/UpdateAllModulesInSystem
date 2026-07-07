@@ -1,3 +1,5 @@
+//! Реестр всех поддерживаемых обновляторов и их метаданных.
+
 use crate::model::ModuleKind;
 
 mod core;
@@ -176,6 +178,23 @@ const REGISTRY_SPECS: &[UpdaterSpec] = &[
     },
 ];
 
+/// Возвращает полный реестр обновляторов, доступных приложению.
+///
+/// # Arguments
+/// Функция не принимает аргументов.
+///
+/// # Returns
+/// Вектор дескрипторов, каждый из которых содержит динамический обработчик,
+/// тип модуля и требования по привилегиям.
+///
+/// # Panics
+/// Не паникует.
+///
+/// # Examples
+/// ```rust,ignore
+/// let handlers = registry();
+/// assert!(!handlers.is_empty());
+/// ```
 pub fn registry() -> Vec<UpdaterDescriptor> {
     REGISTRY_SPECS
         .iter()

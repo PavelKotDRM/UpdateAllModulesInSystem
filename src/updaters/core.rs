@@ -1,14 +1,23 @@
+//! Базовые строительные блоки для описания обновляторов через функции.
+
 use crate::model::{ModuleKind, PackageUpdate};
 use crate::updater::{Updater, UpdaterError};
 use std::sync::mpsc::Sender;
 
+/// Тип функции проверки доступных обновлений.
 pub type CheckFn = fn() -> Result<Vec<PackageUpdate>, UpdaterError>;
+/// Тип функции проверки наличия менеджера пакетов в системе.
 pub type InstalledFn = fn() -> bool;
+/// Тип функции применения обновлений.
 pub type ApplyFn = fn(bool, &[PackageUpdate], &Sender<String>) -> Result<(), UpdaterError>;
 
+/// Дескриптор зарегистрированного обновлятора.
 pub struct UpdaterDescriptor {
+    /// Экземпляр обработчика, реализующего [`Updater`].
     pub updater: Box<dyn Updater>,
+    /// Категория модуля (системный, инструментальный, Python).
     pub kind: ModuleKind,
+    /// Требуется ли повышенный уровень прав для запуска.
     pub requires_elevation: bool,
 }
 
@@ -20,12 +29,19 @@ struct FunctionUpdater {
 }
 
 #[derive(Clone, Copy)]
+/// Спецификация обновлятора в виде набора функциональных указателей.
 pub struct UpdaterSpec {
+    /// Имя обновлятора.
     pub name: &'static str,
+    /// Категория модуля.
     pub kind: ModuleKind,
+    /// Признак необходимости повышенных прав.
     pub requires_elevation: bool,
+    /// Функция проверки установки.
     pub installed: InstalledFn,
+    /// Функция проверки доступных обновлений.
     pub check: CheckFn,
+    /// Функция применения обновлений.
     pub apply: ApplyFn,
 }
 
@@ -53,6 +69,22 @@ impl Updater for FunctionUpdater {
 }
 
 impl UpdaterSpec {
+    /// Преобразует спецификацию в готовый дескриптор с динамическим обновлятором.
+    ///
+    /// # Arguments
+    /// * `self` - Спецификация обновлятора.
+    ///
+    /// # Returns
+    /// Новый [`UpdaterDescriptor`], который можно добавить в реестр.
+    ///
+    /// # Panics
+    /// Не паникует.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// let descriptor = spec.into_descriptor();
+    /// assert!(descriptor.updater.name().len() > 0);
+    /// ```
     pub fn into_descriptor(self) -> UpdaterDescriptor {
         UpdaterDescriptor {
             updater: Box::new(FunctionUpdater {

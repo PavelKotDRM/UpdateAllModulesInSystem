@@ -1,4 +1,9 @@
-use crate::app::{discover_modules, run_updates, SelectionFilter};
+//! Графический интерфейс приложения на базе `egui`/`eframe`.
+
+use crate::app::{
+    discover_modules, run_updates_with_progress, ModuleUpdateProgress, SelectionFilter,
+    UpdatePhase,
+};
 use crate::model::ModuleSnapshot;
 use crate::system;
 use eframe::{egui, App, Frame, NativeOptions};
@@ -20,9 +25,15 @@ struct GuiState {
 }
 
 #[derive(Debug)]
+/// События, которыми фоновые задачи уведомляют GUI.
 pub enum GuiEvent {
+    /// Строка лога от процесса сканирования/обновления.
     Log(String),
+    /// Обновление фазы конкретного модуля.
+    ModuleProgress(ModuleUpdateProgress),
+    /// Завершение сканирования с итоговым списком модулей.
     ScanFinished(Vec<ModuleSnapshot>),
+    /// Завершение процесса обновления с итоговым сообщением.
     UpdateFinished(String),
 }
 
@@ -35,6 +46,7 @@ enum GuiTab {
     Settings,
 }
 
+/// Корневое состояние и контроллер GUI-приложения.
 pub struct GuiApp {
     filter: SelectionFilter,
     events_tx: Sender<GuiEvent>,
@@ -49,9 +61,27 @@ pub struct GuiApp {
     persisted_update_selection: BTreeMap<String, BTreeSet<String>>,
     active_tab: GuiTab,
     show_not_found: bool,
+    module_progress: BTreeMap<String, UpdatePhase>,
 }
 
 impl GuiApp {
+    /// Создает GUI-приложение и запускает первичное сканирование модулей.
+    ///
+    /// # Arguments
+    /// * `filter` - Фильтр отбора модулей.
+    /// * `auto_yes` - Значение авто-подтверждения по умолчанию.
+    ///
+    /// # Returns
+    /// Инициализированный экземпляр [`GuiApp`].
+    ///
+    /// # Panics
+    /// Не паникует.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// let app = GuiApp::new(SelectionFilter::default(), false);
+    /// let _ = app;
+    /// ```
     pub fn new(filter: SelectionFilter, auto_yes: bool) -> Self {
         let (events_tx, events_rx) = mpsc::channel();
         let persisted_state = load_gui_state();
@@ -78,6 +108,7 @@ impl GuiApp {
             persisted_update_selection,
             active_tab: GuiTab::Overview,
             show_not_found,
+            module_progress: BTreeMap::new(),
         };
         app.start_scan();
         app
@@ -105,10 +136,12 @@ impl GuiApp {
         self.busy = true;
         self.status_line = String::from("Обновление...");
         let modules = self.modules.clone();
+        self.module_progress.clear();
         let sender = self.events_tx.clone();
         let force_yes = self.auto_yes;
         thread::spawn(move || {
             let (log_tx, log_rx) = mpsc::channel::<String>();
+            let (progress_tx, progress_rx) = mpsc::channel::<ModuleUpdateProgress>();
             let log_sender = sender.clone();
             thread::spawn(move || {
                 while let Ok(message) = log_rx.recv() {
@@ -116,7 +149,14 @@ impl GuiApp {
                 }
             });
 
-            let results = run_updates(&modules, force_yes, &log_tx);
+            let progress_sender = sender.clone();
+            thread::spawn(move || {
+                while let Ok(progress) = progress_rx.recv() {
+                    let _ = progress_sender.send(GuiEvent::ModuleProgress(progress));
+                }
+            });
+
+            let results = run_updates_with_progress(&modules, force_yes, &log_tx, Some(progress_tx));
             let summary = if results.is_empty() {
                 String::from("Нет выбранных модулей с доступными обновлениями")
             } else if results.iter().all(|(_, result)| result.is_ok()) {
@@ -302,8 +342,13 @@ impl GuiApp {
         while let Ok(event) = self.events_rx.try_recv() {
             match event {
                 GuiEvent::Log(message) => self.logs.push(message),
+                GuiEvent::ModuleProgress(progress) => {
+                    self.module_progress
+                        .insert(progress.module_name, progress.phase);
+                }
                 GuiEvent::ScanFinished(modules) => {
                     self.modules = modules;
+                    self.module_progress.clear();
                     self.apply_persisted_selection();
                     self.busy = false;
                     self.status_line = String::from("Сканирование завершено");
@@ -435,6 +480,7 @@ impl GuiApp {
                 let columns = ((available_width / 420.0).floor() as usize).clamp(1, 3);
                 let mut selection_changed = false;
                 let visible_count = self.visible_modules_count();
+                let module_progress = &self.module_progress;
 
                 if visible_count == 0 {
                     ui.label("Нет отображаемых модулей. Включите показ не найденных в настройках или выполните сканирование.");
@@ -446,7 +492,8 @@ impl GuiApp {
                         if !self.show_not_found && !module.installed {
                             continue;
                         }
-                        Self::render_module_card(ui, module, &mut selection_changed);
+                        let progress = module_progress.get(&module.name).copied();
+                        Self::render_module_card(ui, module, progress, &mut selection_changed);
                     }
                 } else {
                     ui.columns(columns, |columns_ui| {
@@ -456,7 +503,8 @@ impl GuiApp {
                                 continue;
                             }
                             let column = &mut columns_ui[visible_index % columns];
-                            Self::render_module_card(column, module, &mut selection_changed);
+                            let progress = module_progress.get(&module.name).copied();
+                            Self::render_module_card(column, module, progress, &mut selection_changed);
                             visible_index += 1;
                         }
                     });
@@ -521,47 +569,58 @@ impl GuiApp {
     fn render_module_card(
         ui: &mut egui::Ui,
         module: &mut ModuleSnapshot,
+        progress: Option<UpdatePhase>,
         selection_changed: &mut bool,
     ) {
-        ui.group(|ui| {
-            ui.set_min_width(320.0);
-            ui.horizontal_wrapped(|ui| {
-                let response = ui.checkbox(&mut module.selected, "");
-                if response.changed() {
-                    *selection_changed = true;
+        let module_id = module.name.clone();
+        ui.push_id(module_id, |ui| {
+            ui.group(|ui| {
+                ui.set_min_width(320.0);
+                ui.horizontal_wrapped(|ui| {
+                    let response = ui.checkbox(&mut module.selected, "");
+                    if response.changed() {
+                        *selection_changed = true;
+                    }
+                    ui.heading(format!("{} ({:?})", module.name, module.kind));
+                });
+
+                ui.label(module.status_label());
+
+                if let Some(progress) = progress {
+                    ui.colored_label(
+                        phase_color(progress),
+                        format!("Статус обновления: {}", progress.label()),
+                    );
                 }
-                ui.heading(format!("{} ({:?})", module.name, module.kind));
+
+                if !module.updates.is_empty() {
+                    let selected_updates_count = module
+                        .updates
+                        .iter()
+                        .filter(|update| update.selected)
+                        .count();
+                    let detail_lines = module.detail_lines();
+                    ui.small(format!(
+                        "Выбрано приложений: {}/{}",
+                        selected_updates_count,
+                        module.updates.len()
+                    ));
+
+                    egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for (update, detail_line) in module.updates.iter_mut().zip(detail_lines) {
+                                ui.horizontal_wrapped(|ui| {
+                                    let response = ui.checkbox(&mut update.selected, "");
+                                    if response.changed() {
+                                        *selection_changed = true;
+                                    }
+                                    ui.label(detail_line);
+                                });
+                            }
+                        });
+                }
             });
-
-            ui.label(module.status_label());
-
-            if !module.updates.is_empty() {
-                let selected_updates_count = module
-                    .updates
-                    .iter()
-                    .filter(|update| update.selected)
-                    .count();
-                let detail_lines = module.detail_lines();
-                ui.small(format!(
-                    "Выбрано приложений: {}/{}",
-                    selected_updates_count,
-                    module.updates.len()
-                ));
-
-                egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        for (update, detail_line) in module.updates.iter_mut().zip(detail_lines) {
-                            ui.horizontal_wrapped(|ui| {
-                                let response = ui.checkbox(&mut update.selected, "");
-                                if response.changed() {
-                                    *selection_changed = true;
-                                }
-                                ui.label(detail_line);
-                            });
-                        }
-                    });
-            }
         });
     }
 
@@ -571,6 +630,15 @@ impl GuiApp {
         } else {
             None
         }
+    }
+}
+
+fn phase_color(phase: UpdatePhase) -> egui::Color32 {
+    match phase {
+        UpdatePhase::Queued => egui::Color32::from_rgb(210, 170, 40),
+        UpdatePhase::Running => egui::Color32::from_rgb(70, 140, 240),
+        UpdatePhase::Completed => egui::Color32::from_rgb(40, 160, 80),
+        UpdatePhase::Failed => egui::Color32::from_rgb(200, 70, 70),
     }
 }
 
@@ -657,6 +725,26 @@ fn export_logs_to_file(logs: &[String]) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// Запускает нативное GUI-приложение.
+///
+/// # Arguments
+/// * `filter` - Фильтр отбора модулей для сканирования.
+/// * `auto_yes` - Флаг авто-подтверждения команд обновления.
+///
+/// # Returns
+/// `Ok(())`, если окно успешно отработало и завершилось штатно.
+///
+/// # Errors
+/// Возвращает ошибку, если запуск `eframe` не удался.
+///
+/// # Panics
+/// Не паникует.
+///
+/// # Examples
+/// ```rust,ignore
+/// launch_gui(SelectionFilter::default(), false)?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub fn launch_gui(filter: SelectionFilter, auto_yes: bool) -> anyhow::Result<()> {
     system::hide_windows_console_if_needed(true);
     let native_options = NativeOptions::default();

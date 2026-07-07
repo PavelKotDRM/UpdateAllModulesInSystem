@@ -1,3 +1,5 @@
+//! Обновляторы для Python-экосистемы (`pip`, `uv`) и `rustup`.
+
 use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{capture_command, command_exists, stream_command, CommandOutput, UpdaterError};

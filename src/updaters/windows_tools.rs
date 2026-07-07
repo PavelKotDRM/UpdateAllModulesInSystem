@@ -1,3 +1,5 @@
+//! Обновляторы Windows-инструментов: `winget`, `choco`, Windows Update и MSYS2.
+
 use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{capture_command, heuristic_parse_updates, stream_command, CommandOutput, UpdaterError};

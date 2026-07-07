@@ -1,3 +1,5 @@
+//! Точка входа приложения: разбор CLI, выбор режима и запуск обновлений.
+
 mod app;
 mod cli;
 mod gui;
@@ -11,6 +13,25 @@ use clap::Parser;
 use cli::Cli;
 use std::collections::BTreeSet;
 
+/// Запускает приложение в CLI или GUI режиме в зависимости от аргументов.
+///
+/// # Arguments
+/// Функция не принимает аргументов.
+///
+/// # Returns
+/// `Ok(())` при корректном выполнении сценария запуска.
+///
+/// # Errors
+/// Возвращает ошибку запуска GUI или аварии потока обновлений в CLI.
+///
+/// # Panics
+/// Не паникует.
+///
+/// # Examples
+/// ```rust,ignore
+/// main()?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let raw_args: Vec<String> = std::env::args().collect();
@@ -28,6 +49,22 @@ fn main() -> Result<()> {
     run_cli(cli, filter)
 }
 
+/// Строит фильтр выбора модулей на основе параметров CLI.
+///
+/// # Arguments
+/// * `cli` - Распарсенные аргументы командной строки.
+///
+/// # Returns
+/// Инициализированный [`app::SelectionFilter`].
+///
+/// # Panics
+/// Не паникует.
+///
+/// # Examples
+/// ```rust,ignore
+/// let filter = build_selection_filter(&cli);
+/// println!("{}", filter.only.len());
+/// ```
 fn build_selection_filter(cli: &Cli) -> app::SelectionFilter {
     app::SelectionFilter {
         skip_system: cli.skip_system,
@@ -38,6 +75,26 @@ fn build_selection_filter(cli: &Cli) -> app::SelectionFilter {
     }
 }
 
+/// Выполняет CLI-сценарий: сканирование, вывод таблицы и запуск обновлений.
+///
+/// # Arguments
+/// * `cli` - Параметры запуска CLI.
+/// * `filter` - Фильтр модулей.
+///
+/// # Returns
+/// `Ok(())`, если сценарий завершился штатно.
+///
+/// # Errors
+/// Возвращает ошибку при панике потока обновления.
+///
+/// # Panics
+/// Не паникует.
+///
+/// # Examples
+/// ```rust,ignore
+/// run_cli(cli, filter)?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<()> {
     let modules = app::discover_modules(&filter);
 

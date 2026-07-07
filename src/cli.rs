@@ -1,3 +1,5 @@
+//! Определение CLI-аргументов приложения через `clap`.
+
 use clap::Parser;
 
 #[derive(Debug, Clone, Parser)]
@@ -6,31 +8,41 @@ use clap::Parser;
     version,
     about = "Кроссплатформенная утилита обновления системы, pip и dev-tools"
 )]
+/// Параметры командной строки приложения.
 pub struct Cli {
+    /// Только проверить обновления без применения.
     #[arg(short = 'c', long = "check")]
     pub check: bool,
 
+    /// Автоматически подтверждать действия (`-y`).
     #[arg(short = 'y', long = "yes")]
     pub yes: bool,
 
+    /// Запустить графический интерфейс.
     #[arg(long = "gui")]
     pub gui: bool,
 
+    /// Выводить подробные логи в CLI.
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
 
+    /// Пропустить системные менеджеры пакетов.
     #[arg(long = "skip-system")]
     pub skip_system: bool,
 
+    /// Пропустить Python-пакеты.
     #[arg(long = "skip-pip")]
     pub skip_pip: bool,
 
+    /// Пропустить инструменты разработки.
     #[arg(long = "skip-tools")]
     pub skip_tools: bool,
 
+    /// Включить только инструменты разработки.
     #[arg(long = "only-tools", conflicts_with = "skip_tools")]
     pub only_tools: bool,
 
+    /// Ограничить обработку перечисленными именами модулей.
     #[arg(long = "only", value_name = "NAME")]
     pub only: Vec<String>,
 }

@@ -1,3 +1,5 @@
+//! Общие вспомогательные функции для запуска команд и эвристической проверки.
+
 use crate::model::PackageUpdate;
 use crate::updater::{capture_command, heuristic_parse_updates, stream_command, CommandOutput, UpdaterError};
 use std::sync::mpsc::Sender;
