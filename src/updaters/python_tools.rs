@@ -128,6 +128,21 @@ pub(super) fn uv_installed() -> bool {
     system::command_available("uv")
 }
 
+pub(super) fn run_uv_self_capture(args: &[String]) -> Result<CommandOutput, UpdaterError> {
+    let mut command_args = vec!["self".to_owned()];
+    command_args.extend(args.iter().cloned());
+    capture_command("uv", &command_args)
+}
+
+pub(super) fn run_uv_self_stream(
+    args: &[String],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let mut command_args = vec!["self".to_owned()];
+    command_args.extend(args.iter().cloned());
+    stream_checked("uv", &command_args, log_sender)
+}
+
 pub(super) fn run_uv_pip_capture(args: &[String]) -> Result<CommandOutput, UpdaterError> {
     let mut command_args = vec!["pip".to_owned()];
     command_args.extend(args.iter().cloned());
@@ -164,7 +179,33 @@ pub(super) fn parse_uv_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
 }
 
 pub(super) fn check_uv_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    parse_uv_updates()
+    let current = current_uv_version()?;
+    let output = run_uv_self_capture(&["update".to_owned(), "--dry-run".to_owned()])?;
+    let versions = extract_uv_versions(&output.merged_text());
+
+    if versions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if versions.len() == 1 {
+        if versions[0] == current {
+            return Ok(Vec::new());
+        }
+
+        return Ok(vec![PackageUpdate::new("uv", current, versions[0].clone())]);
+    }
+
+    let available_version = versions
+        .into_iter()
+        .rev()
+        .find(|version| version != &current)
+        .unwrap_or_else(|| current.clone());
+
+    if available_version == current {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![PackageUpdate::new("uv", current, available_version)])
 }
 
 pub(super) fn apply_uv_updates(
@@ -172,23 +213,48 @@ pub(super) fn apply_uv_updates(
     selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let updates = if selected_updates.is_empty() {
-        parse_uv_updates()?
-    } else {
-        selected_updates.to_vec()
-    };
-
-    if updates.is_empty() {
+    if selected_updates.is_empty() && check_uv_updates()?.is_empty() {
         let _ = log_sender.send("uv: обновления не найдены".to_owned());
         return Ok(());
     }
 
-    let mut args = vec!["install".to_owned(), "--upgrade".to_owned()];
+    let mut args = vec!["update".to_owned()];
     if force_yes {
         args.push("--no-input".to_owned());
     }
-    args.extend(updates.into_iter().map(|update| update.name));
-    run_uv_pip_stream(&args, log_sender)
+
+    run_uv_self_stream(&args, log_sender)
+}
+
+fn current_uv_version() -> Result<String, UpdaterError> {
+    let output = run_uv_self_capture(&["version".to_owned(), "--short".to_owned()])?;
+    let version = output.stdout.trim();
+    if version.is_empty() {
+        return Err(UpdaterError::Message("uv: не удалось определить текущую версию".to_owned()));
+    }
+
+    Ok(version.trim_start_matches('v').to_owned())
+}
+
+fn extract_uv_versions(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|token| {
+            token.trim_matches(|ch: char| {
+                !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-' && ch != '+'
+            })
+        })
+        .filter(|token| {
+            token.starts_with('v')
+                && token.len() > 1
+                && token[1..].chars().any(|ch| ch.is_ascii_digit())
+        })
+        .map(|token| token.trim_start_matches('v').to_owned())
+        .fold(Vec::new(), |mut versions, version| {
+            if !version.is_empty() && !versions.iter().any(|existing| existing == &version) {
+                versions.push(version);
+            }
+            versions
+        })
 }
 
 pub(super) fn apply_rustup_updates(
@@ -208,4 +274,25 @@ pub(super) fn check_rustup_updates() -> Result<Vec<PackageUpdate>, UpdaterError>
 
 pub(super) fn installed_rustup() -> bool {
     system::command_available("rustup")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_uv_versions;
+
+    #[test]
+    fn extract_uv_versions_reads_update_dry_run_output() {
+        let text = "info: Checking for updates...\nsuccess: You're already on version v0.11.28 of uv (the latest version).";
+
+        let versions = extract_uv_versions(text);
+        assert_eq!(versions, vec!["0.11.28".to_owned()]);
+    }
+
+    #[test]
+    fn extract_uv_versions_keeps_distinct_versions_in_order() {
+        let text = "info: update available v0.11.27 -> v0.11.28";
+
+        let versions = extract_uv_versions(text);
+        assert_eq!(versions, vec!["0.11.27".to_owned(), "0.11.28".to_owned()]);
+    }
 }
