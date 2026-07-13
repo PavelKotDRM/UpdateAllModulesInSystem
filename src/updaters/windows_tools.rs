@@ -33,8 +33,6 @@ pub(super) fn run_powershell_capture(script: &str) -> Result<CommandOutput, Upda
     let args = vec![
         "-NoProfile".to_owned(),
         "-NonInteractive".to_owned(),
-        "-ExecutionPolicy".to_owned(),
-        "Bypass".to_owned(),
         "-Command".to_owned(),
         script.to_owned(),
     ];
@@ -50,8 +48,6 @@ pub(super) fn run_powershell_stream(
     let args = vec![
         "-NoProfile".to_owned(),
         "-NonInteractive".to_owned(),
-        "-ExecutionPolicy".to_owned(),
-        "Bypass".to_owned(),
         "-Command".to_owned(),
         script.to_owned(),
     ];
