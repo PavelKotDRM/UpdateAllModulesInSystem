@@ -60,6 +60,8 @@ pub struct ModuleUpdateProgress {
     pub module_name: String,
     /// Текущая фаза выполнения.
     pub phase: UpdatePhase,
+    /// Последняя строка потокового вывода обновлятора.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -501,11 +503,19 @@ fn run_update_job(
     let (module_log_tx, module_log_rx) = mpsc::channel::<String>();
     let forward_sender = log_sender.clone();
     let forward_module_name = module_name.clone();
+    let forward_progress_sender = progress_sender.clone();
     // Каждый обновлятор пишет в свой канал, а здесь мы добавляем префикс модуля
     // и объединяем поток логов в общий канал UI/CLI.
     let forward_handle = thread::spawn(move || {
         while let Ok(message) = module_log_rx.recv() {
-            let _ = forward_sender.send(format_module_log(&forward_module_name, message));
+            let _ = forward_sender.send(format_module_log(&forward_module_name, &message));
+            if let Some(sender) = &forward_progress_sender {
+                let _ = sender.send(ModuleUpdateProgress {
+                    module_name: forward_module_name.clone(),
+                    phase: UpdatePhase::Running,
+                    detail: Some(message),
+                });
+            }
         }
     });
 
@@ -594,6 +604,7 @@ fn send_progress(
         let _ = sender.send(ModuleUpdateProgress {
             module_name: module_name.to_owned(),
             phase,
+            detail: None,
         });
     }
 }

@@ -2,12 +2,10 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{
-    CommandOutput, UpdaterError, capture_command, heuristic_parse_updates, stream_command,
-};
+use crate::updater::{CommandOutput, UpdaterError, capture_command, stream_command};
 use crate::updaters::common::stream_checked;
 use crate::updaters::parsers::{
-    parse_choco_updates, parse_windows_update_items, parse_winget_updates,
+    parse_choco_updates, parse_msys2_updates, parse_windows_update_items, parse_winget_updates,
 };
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -263,8 +261,44 @@ pub(super) fn msys2_installed() -> bool {
 }
 
 pub(super) fn msys2_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let sync_output = msys2_capture_pacman(&["-Sy", "--noconfirm"])?;
+    ensure_msys2_pacman_success(sync_output)?;
+
     let output = msys2_capture_pacman(&["-Qu"])?;
-    Ok(heuristic_parse_updates("msys2", &output.merged_text()))
+    parse_msys2_query_output(output)
+}
+
+fn parse_msys2_query_output(output: CommandOutput) -> Result<Vec<PackageUpdate>, UpdaterError> {
+    if output.success {
+        return Ok(parse_msys2_updates(&output.stdout));
+    }
+
+    if output.exit_code == Some(1) && output.merged_text().trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Err(msys2_pacman_error(output))
+}
+
+fn ensure_msys2_pacman_success(output: CommandOutput) -> Result<CommandOutput, UpdaterError> {
+    if output.success {
+        Ok(output)
+    } else {
+        Err(msys2_pacman_error(output))
+    }
+}
+
+fn msys2_pacman_error(output: CommandOutput) -> UpdaterError {
+    let details = output.merged_text();
+    UpdaterError::CommandFailed {
+        program: "pacman".to_owned(),
+        code: output.exit_code,
+        stderr: if details.trim().is_empty() {
+            "pacman не сообщил подробностей".to_owned()
+        } else {
+            details
+        },
+    }
 }
 
 pub(super) fn msys2_apply_updates(
@@ -272,21 +306,15 @@ pub(super) fn msys2_apply_updates(
     _selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let mut args = vec!["-Syu"];
-    if force_yes {
-        args.push("--noconfirm");
-    } else {
+    let mut args = vec!["-Syu", "--noconfirm"];
+    if !force_yes {
         args.push("--needed");
     }
     let output = msys2_stream_pacman(&args, log_sender)?;
     if output.success {
         Ok(())
     } else {
-        Err(UpdaterError::CommandFailed {
-            program: "pacman".to_owned(),
-            code: output.exit_code,
-            stderr: output.stderr,
-        })
+        Err(msys2_pacman_error(output))
     }
 }
 
@@ -346,6 +374,32 @@ fn msys2_stream_pacman(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_pacman_query_exit_one_means_no_updates() {
+        let output = CommandOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(1),
+            success: false,
+        };
+
+        let updates = parse_msys2_query_output(output).unwrap();
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn failed_pacman_query_preserves_error_output() {
+        let output = CommandOutput {
+            stdout: "ошибка базы".to_owned(),
+            stderr: String::new(),
+            exit_code: Some(1),
+            success: false,
+        };
+
+        let error = parse_msys2_query_output(output).unwrap_err();
+        assert!(error.to_string().contains("ошибка базы"));
+    }
 
     #[test]
     fn windows_update_apply_only_recommends_windows_update_center() {

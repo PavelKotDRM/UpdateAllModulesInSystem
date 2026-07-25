@@ -156,6 +156,24 @@ pub(super) fn parse_choco_updates(text: &str) -> Vec<PackageUpdate> {
         .collect()
 }
 
+pub(super) fn parse_msys2_updates(text: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?;
+            let current = parts.next()?;
+            (parts.next()? == "->").then_some(())?;
+            let available = parts.next()?;
+
+            Some(PackageUpdate::new(
+                format!("msys2:{name}"),
+                current,
+                available,
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +191,21 @@ python|3.12.0|3.12.4|false\n\
         assert_eq!(updates[0].current_version, "2.45.0");
         assert_eq!(updates[0].available_version, "2.46.0");
         assert_eq!(updates[1].name, "choco:python");
+    }
+
+    #[test]
+    fn parse_msys2_updates_reads_pacman_query_output() {
+        let text = "\
+pacman 6.1.0-3 -> 7.0.0.r6.g1f38429-1\n\
+mingw-w64-ucrt-x86_64-gcc 14.2.0-2 -> 15.1.0-1\n\
+";
+
+        let updates = parse_msys2_updates(text);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "msys2:pacman");
+        assert_eq!(updates[0].current_version, "6.1.0-3");
+        assert_eq!(updates[0].available_version, "7.0.0.r6.g1f38429-1");
+        assert_eq!(updates[1].name, "msys2:mingw-w64-ucrt-x86_64-gcc");
     }
 
     #[test]

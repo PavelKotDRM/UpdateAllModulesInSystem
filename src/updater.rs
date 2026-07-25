@@ -2,7 +2,7 @@
 
 use crate::model::PackageUpdate;
 use std::fmt::{Display, Formatter};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, Read};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -311,38 +311,57 @@ pub fn stream_command(
 }
 
 fn pump_stream<R: Read + Send + 'static>(
-    reader: R,
+    mut reader: R,
     sender: Sender<String>,
     label: &'static str,
 ) -> Result<String, UpdaterError> {
-    let mut reader = BufReader::new(reader);
-    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut pending = Vec::new();
     let mut collected = String::new();
 
     loop {
-        buffer.clear();
-        let read =
-            reader
-                .read_until(b'\n', &mut buffer)
-                .map_err(|source| UpdaterError::StreamError {
-                    program: label.to_owned(),
-                    source,
-                })?;
+        let read = reader
+            .read(&mut chunk)
+            .map_err(|source| UpdaterError::StreamError {
+                program: label.to_owned(),
+                source,
+            })?;
 
         if read == 0 {
             break;
         }
 
-        let text = decode_bytes(&buffer);
-        let trimmed = text.trim_end();
-        if !trimmed.is_empty() {
-            collected.push_str(trimmed);
-            collected.push('\n');
-            let _ = sender.send(format!("[{label}] {trimmed}"));
+        for &byte in &chunk[..read] {
+            if byte == b'\n' || byte == b'\r' {
+                emit_stream_message(&mut pending, &sender, label, &mut collected);
+            } else {
+                pending.push(byte);
+            }
         }
     }
 
+    emit_stream_message(&mut pending, &sender, label, &mut collected);
     Ok(collected)
+}
+
+fn emit_stream_message(
+    pending: &mut Vec<u8>,
+    sender: &Sender<String>,
+    label: &str,
+    collected: &mut String,
+) {
+    if pending.is_empty() {
+        return;
+    }
+
+    let text = decode_bytes(pending);
+    pending.clear();
+    let trimmed = text.trim_end();
+    if !trimmed.is_empty() {
+        collected.push_str(trimmed);
+        collected.push('\n');
+        let _ = sender.send(format!("[{label}] {trimmed}"));
+    }
 }
 
 /// Декодирует байтовый буфер в строку с учетом платформенных кодировок.
@@ -488,6 +507,29 @@ mod tests {
     fn decode_bytes_reads_utf8_text() {
         let bytes = "Привет".as_bytes();
         assert_eq!(decode_bytes(bytes), "Привет");
+    }
+
+    #[test]
+    fn pump_stream_emits_carriage_return_progress() {
+        let output = b"package 10%\rpackage 55%\rpackage 100%\ninstalled\n".to_vec();
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        let collected = pump_stream(std::io::Cursor::new(output), sender, "stdout").unwrap();
+        let messages = receiver.iter().collect::<Vec<_>>();
+
+        assert_eq!(
+            messages,
+            vec![
+                "[stdout] package 10%",
+                "[stdout] package 55%",
+                "[stdout] package 100%",
+                "[stdout] installed",
+            ]
+        );
+        assert_eq!(
+            collected,
+            "package 10%\npackage 55%\npackage 100%\ninstalled\n"
+        );
     }
 
     #[test]

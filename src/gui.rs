@@ -76,7 +76,7 @@ pub struct GuiApp {
     persisted_update_selection: BTreeMap<String, BTreeSet<String>>,
     active_tab: GuiTab,
     show_not_found: bool,
-    module_progress: BTreeMap<String, UpdatePhase>,
+    module_progress: BTreeMap<String, ModuleUpdateProgress>,
 }
 
 impl GuiApp {
@@ -358,7 +358,7 @@ impl GuiApp {
                 GuiEvent::Log(message) => self.logs.push(message),
                 GuiEvent::ModuleProgress(progress) => {
                     self.module_progress
-                        .insert(progress.module_name, progress.phase);
+                        .insert(progress.module_name.clone(), progress);
                 }
                 GuiEvent::ScanFinished(modules) => {
                     self.modules = modules;
@@ -505,7 +505,7 @@ impl GuiApp {
                         if !self.show_not_found && !module.installed {
                             continue;
                         }
-                        let progress = module_progress.get(&module.name).copied();
+                        let progress = module_progress.get(&module.name);
                         Self::render_module_card(ui, module, progress, &mut selection_changed);
                     }
                 } else {
@@ -516,7 +516,7 @@ impl GuiApp {
                                 continue;
                             }
                             let column = &mut columns_ui[visible_index % columns];
-                            let progress = module_progress.get(&module.name).copied();
+                            let progress = module_progress.get(&module.name);
                             Self::render_module_card(column, module, progress, &mut selection_changed);
                             visible_index += 1;
                         }
@@ -591,7 +591,7 @@ impl GuiApp {
     fn render_module_card(
         ui: &mut egui::Ui,
         module: &mut ModuleSnapshot,
-        progress: Option<UpdatePhase>,
+        progress: Option<&ModuleUpdateProgress>,
         selection_changed: &mut bool,
     ) {
         let module_id = module.name.clone();
@@ -633,9 +633,20 @@ impl GuiApp {
 
                 if let Some(progress) = progress {
                     ui.colored_label(
-                        phase_color(progress),
-                        format!("Статус обновления: {}", progress.label()),
+                        phase_color(progress.phase),
+                        format!("Статус обновления: {}", progress.phase.label()),
                     );
+                    if let Some(detail) = &progress.detail {
+                        let detail = detail
+                            .strip_prefix("[stdout] ")
+                            .or_else(|| detail.strip_prefix("[stderr] "))
+                            .unwrap_or(detail);
+                        let mut visible = detail.chars().take(140).collect::<String>();
+                        if detail.chars().count() > 140 {
+                            visible.push_str("...");
+                        }
+                        ui.small(visible);
+                    }
                 }
 
                 if !module.updates.is_empty() {
