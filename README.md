@@ -12,6 +12,8 @@
 - Проверка и обновление `pip` через `python -m pip`.
 - Проверка глобальных пакетов и обновление через `npm` и `pnpm`.
 - Сравнение установленной версии Node.js с последней опубликованной версией.
+- Обновление расширений VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf и Positron через CLI редактора.
+- Обновление самих редакторов через системный менеджер (`winget`, `choco`, `apt`, `brew` и другие).
 - Поддержка `rustup`.
 - Поддержка `msys2` через `pacman` на Windows.
 - Табличный вывод в CLI.
@@ -56,8 +58,16 @@
 - `node` (проверка версии; установка обновления выполняется исходным менеджером Node.js)
 - `npm` (глобальные пакеты)
 - `pnpm` (глобальные пакеты)
+- `vscode-extensions` (`code`)
+- `vscode-insiders-extensions` (`code-insiders`)
+- `vscodium-extensions` (`codium`)
+- `cursor-extensions` (`cursor`)
+- `windsurf-extensions` (`windsurf`)
+- `positron-extensions` (`positron`)
 - `pip` через `python -m pip`
 - `uv` через `uv pip`
+
+Установленные расширения проверяются по Visual Studio Marketplace для VS Code и VS Code Insiders и по Open VSX для остальных совместимых редакторов. В список попадают только расширения, для которых опубликована версия, отличающаяся от установленной. Для обновления самого редактора должен быть включен системный менеджер, через который он установлен.
 
 ## Режимы запуска
 

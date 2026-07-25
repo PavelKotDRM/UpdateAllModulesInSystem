@@ -4,6 +4,7 @@ use crate::model::ModuleKind;
 
 mod common;
 mod core;
+mod editor_tools;
 mod node_tools;
 mod parsers;
 mod python_tools;
@@ -12,6 +13,7 @@ mod windows_tools;
 
 pub use core::UpdaterDescriptor;
 use core::UpdaterSpec;
+use editor_tools::*;
 use node_tools::*;
 use python_tools::*;
 use unix_managers::*;
@@ -155,6 +157,54 @@ const REGISTRY_SPECS: &[UpdaterSpec] = &[
         apply: apply_rustup_updates,
     },
     UpdaterSpec {
+        name: "vscode-extensions",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: code_installed,
+        check: code_check_updates,
+        apply: code_apply_updates,
+    },
+    UpdaterSpec {
+        name: "vscode-insiders-extensions",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: code_insiders_installed,
+        check: code_insiders_check_updates,
+        apply: code_insiders_apply_updates,
+    },
+    UpdaterSpec {
+        name: "vscodium-extensions",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: codium_installed,
+        check: codium_check_updates,
+        apply: codium_apply_updates,
+    },
+    UpdaterSpec {
+        name: "cursor-extensions",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: cursor_installed,
+        check: cursor_check_updates,
+        apply: cursor_apply_updates,
+    },
+    UpdaterSpec {
+        name: "windsurf-extensions",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: windsurf_installed,
+        check: windsurf_check_updates,
+        apply: windsurf_apply_updates,
+    },
+    UpdaterSpec {
+        name: "positron-extensions",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: positron_installed,
+        check: positron_check_updates,
+        apply: positron_apply_updates,
+    },
+    UpdaterSpec {
         name: "node",
         kind: ModuleKind::Tool,
         requires_elevation: false,
@@ -227,4 +277,28 @@ pub fn registry() -> Vec<UpdaterDescriptor> {
         .copied()
         .map(UpdaterSpec::into_descriptor)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::registry;
+
+    #[test]
+    fn registry_contains_supported_editor_extension_updaters() {
+        let names = registry()
+            .into_iter()
+            .map(|descriptor| descriptor.updater.name())
+            .collect::<Vec<_>>();
+
+        for expected in [
+            "vscode-extensions",
+            "vscode-insiders-extensions",
+            "vscodium-extensions",
+            "cursor-extensions",
+            "windsurf-extensions",
+            "positron-extensions",
+        ] {
+            assert!(names.contains(&expected), "missing updater: {expected}");
+        }
+    }
 }

@@ -70,6 +70,8 @@ pub enum UpdaterError {
     },
     #[error("json error: {0}")]
     JsonError(#[from] serde_json::Error),
+    #[error("http error: {0}")]
+    HttpError(#[from] reqwest::Error),
     #[error("{0}")]
     Message(String),
 }
