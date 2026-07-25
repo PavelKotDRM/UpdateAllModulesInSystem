@@ -4,13 +4,14 @@ use crate::app::{
     ModuleUpdateProgress, SelectionFilter, UpdatePhase, discover_modules, run_updates_with_progress,
 };
 use crate::model::ModuleSnapshot;
+use crate::repaint::{self, RepaintSender};
 use crate::system;
-use eframe::{App, Frame, NativeOptions, egui};
+use eframe::{App, Frame, egui};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 const GUI_STATE_FILE: &str = ".update_all_modules_gui_state.json";
@@ -63,7 +64,7 @@ fn module_selection_state(selected_count: usize, total_count: usize) -> ModuleSe
 /// Корневое состояние и контроллер GUI-приложения.
 pub struct GuiApp {
     filter: SelectionFilter,
-    events_tx: Sender<GuiEvent>,
+    events_tx: RepaintSender<GuiEvent>,
     events_rx: Receiver<GuiEvent>,
     modules: Vec<ModuleSnapshot>,
     logs: Vec<String>,
@@ -96,8 +97,8 @@ impl GuiApp {
     /// let app = GuiApp::new(SelectionFilter::default(), false);
     /// let _ = app;
     /// ```
-    pub fn new(filter: SelectionFilter, auto_yes: bool) -> Self {
-        let (events_tx, events_rx) = mpsc::channel();
+    pub fn new(filter: SelectionFilter, auto_yes: bool, context: &egui::Context) -> Self {
+        let (events_tx, events_rx) = repaint::channel(context);
         let persisted_state = load_gui_state();
         let persisted_selection: BTreeSet<String> =
             persisted_state.selected_modules.iter().cloned().collect();
@@ -697,10 +698,6 @@ fn phase_color(phase: UpdatePhase) -> egui::Color32 {
 impl App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
         self.process_events();
-        if self.busy {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
-        }
 
         egui::Panel::top("toolbar").show(ui, |ui| {
             self.show_toolbar(ui);
@@ -802,11 +799,17 @@ fn export_logs_to_file(logs: &[String]) -> anyhow::Result<PathBuf> {
 /// ```
 pub fn launch_gui(filter: SelectionFilter, auto_yes: bool) -> anyhow::Result<()> {
     system::hide_windows_console_if_needed(true);
-    let native_options = NativeOptions::default();
+    let native_options = repaint::stable_native_options();
     eframe::run_native(
         "UpdateAllModules",
         native_options,
-        Box::new(move |_creation_context| Ok(Box::new(GuiApp::new(filter, auto_yes)))),
+        Box::new(move |creation_context| {
+            Ok(Box::new(GuiApp::new(
+                filter,
+                auto_yes,
+                &creation_context.egui_ctx,
+            )))
+        }),
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(())

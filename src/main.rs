@@ -5,6 +5,7 @@ mod build_info;
 mod cli;
 mod gui;
 mod model;
+mod repaint;
 mod system;
 mod updater;
 mod updaters;
