@@ -3,10 +3,13 @@
 use crate::model::{ModuleKind, ModuleSnapshot, ModuleStatus};
 use crate::system;
 use crate::updater::{Updater, UpdaterError};
-use crate::updaters::{registry, UpdaterDescriptor};
-use comfy_table::{presets::UTF8_FULL, ContentArrangement, Table};
+use crate::updaters::{UpdaterDescriptor, registry};
+use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{mpsc::{self, Sender}, Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    mpsc::{self, Sender},
+};
 use std::thread;
 
 const MAX_PARALLEL_WORKERS: usize = 8;
@@ -201,7 +204,11 @@ pub fn discover_modules(filter: &SelectionFilter) -> Vec<ModuleSnapshot> {
 /// let snapshot = scan_updater(&*descriptor.updater, descriptor.kind, descriptor.requires_elevation);
 /// println!("{}", snapshot.name);
 /// ```
-pub fn scan_updater(updater: &dyn Updater, kind: ModuleKind, requires_elevation: bool) -> ModuleSnapshot {
+pub fn scan_updater(
+    updater: &dyn Updater,
+    kind: ModuleKind,
+    requires_elevation: bool,
+) -> ModuleSnapshot {
     let mut snapshot = ModuleSnapshot::new(updater.name(), kind, requires_elevation);
 
     if !updater.is_installed() {
@@ -252,7 +259,11 @@ pub fn render_cli_table(modules: &[ModuleSnapshot]) -> String {
     for module in modules {
         table.add_row(vec![
             module.name.clone(),
-            if module.installed { "Да".to_owned() } else { "Нет".to_owned() },
+            if module.installed {
+                "Да".to_owned()
+            } else {
+                "Нет".to_owned()
+            },
             module.status_label(),
             if module.updates.is_empty() {
                 "-".to_owned()
@@ -292,7 +303,9 @@ pub fn summarize_elevation_warning(modules: &[ModuleSnapshot]) -> Option<String>
         return None;
     }
 
-    let needs_privileges = modules.iter().any(|module| module.requires_elevation && module.installed);
+    let needs_privileges = modules
+        .iter()
+        .any(|module| module.requires_elevation && module.installed);
     if !needs_privileges {
         return None;
     }
@@ -321,7 +334,11 @@ pub fn summarize_elevation_warning(modules: &[ModuleSnapshot]) -> Option<String>
 /// let (tx, _rx) = std::sync::mpsc::channel::<String>();
 /// let _results = run_updates(&modules, true, &tx);
 /// ```
-pub fn run_updates(modules: &[ModuleSnapshot], force_yes: bool, log_sender: &Sender<String>) -> Vec<(String, Result<(), UpdaterError>)> {
+pub fn run_updates(
+    modules: &[ModuleSnapshot],
+    force_yes: bool,
+    log_sender: &Sender<String>,
+) -> Vec<(String, Result<(), UpdaterError>)> {
     run_updates_with_progress(modules, force_yes, log_sender, None)
 }
 
@@ -371,14 +388,23 @@ pub fn run_updates_with_progress(
             .collect();
 
         if let Some(reason) = skip_update_reason(module, &selected_updates) {
-            let _ = log_sender.send(format_module_log(&module.name, format!("Пропуск: {reason}")));
+            let _ = log_sender.send(format_module_log(
+                &module.name,
+                format!("Пропуск: {reason}"),
+            ));
             continue;
         }
 
         let Some(updater) = handlers.remove(&module.name) else {
-            let outcome = Err(UpdaterError::Message(format!("{}: обработчик не найден", module.name)));
+            let outcome = Err(UpdaterError::Message(format!(
+                "{}: обработчик не найден",
+                module.name
+            )));
             send_progress(&progress_sender, &module.name, UpdatePhase::Failed);
-            let _ = log_sender.send(format_module_log(&module.name, format!("Этап: ошибка: {}", outcome.as_ref().err().unwrap())));
+            let _ = log_sender.send(format_module_log(
+                &module.name,
+                format!("Этап: ошибка: {}", outcome.as_ref().err().unwrap()),
+            ));
             results.push((module.name.clone(), outcome));
             continue;
         };
@@ -404,7 +430,9 @@ pub fn run_updates_with_progress(
     let parallel_handle = (!parallel_jobs.is_empty()).then(|| {
         let log_sender = log_sender.clone();
         let progress_sender = progress_sender.clone();
-        thread::spawn(move || run_parallel_update_jobs(parallel_jobs, force_yes, log_sender, progress_sender))
+        thread::spawn(move || {
+            run_parallel_update_jobs(parallel_jobs, force_yes, log_sender, progress_sender)
+        })
     });
 
     let serial_sender = log_sender.clone();
@@ -413,7 +441,14 @@ pub fn run_updates_with_progress(
         thread::spawn(move || {
             serial_jobs
                 .into_iter()
-                .map(|job| run_update_job(job, force_yes, &serial_sender, serial_progress_sender.clone()))
+                .map(|job| {
+                    run_update_job(
+                        job,
+                        force_yes,
+                        &serial_sender,
+                        serial_progress_sender.clone(),
+                    )
+                })
                 .collect::<Vec<_>>()
         })
     });
@@ -427,7 +462,11 @@ pub fn run_updates_with_progress(
     }
 
     completed.sort_by_key(|(index, _, _)| *index);
-    results.extend(completed.into_iter().map(|(_, module_name, outcome)| (module_name, outcome)));
+    results.extend(
+        completed
+            .into_iter()
+            .map(|(_, module_name, outcome)| (module_name, outcome)),
+    );
 
     results
 }
@@ -481,7 +520,10 @@ fn run_update_job(
         }
         Err(error) => {
             send_progress(&progress_sender, &module_name, UpdatePhase::Failed);
-            let _ = log_sender.send(format_module_log(&module_name, format!("Этап: ошибка: {error}")));
+            let _ = log_sender.send(format_module_log(
+                &module_name,
+                format!("Этап: ошибка: {error}"),
+            ));
         }
     }
 
@@ -523,7 +565,12 @@ fn run_parallel_update_jobs(
                     break;
                 };
 
-                let result = run_update_job(job, force_yes, &worker_log_sender, worker_progress_sender.clone());
+                let result = run_update_job(
+                    job,
+                    force_yes,
+                    &worker_log_sender,
+                    worker_progress_sender.clone(),
+                );
                 let _ = result_sender.send(result);
             }
         }));
@@ -760,10 +807,21 @@ mod tests {
         assert!(results[0].1.is_err());
 
         let logs: Vec<String> = rx.iter().collect();
-        assert!(logs.iter().any(|line| line.contains("[m1]") && line.contains("модуль не выбран")));
-        assert!(logs.iter().any(|line| line.contains("[m2]") && line.contains("инструмент не установлен")));
-        assert!(logs.iter().any(|line| line.contains("[m3]") && line.contains("обновления не требуются")));
-        assert!(logs.iter().any(|line| line.contains("[missing-updater]") && line.contains("обработчик не найден")));
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("[m1]") && line.contains("модуль не выбран"))
+        );
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("[m2]") && line.contains("инструмент не установлен"))
+        );
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("[m3]") && line.contains("обновления не требуются"))
+        );
+        assert!(logs.iter().any(
+            |line| line.contains("[missing-updater]") && line.contains("обработчик не найден")
+        ));
     }
 
     #[test]
@@ -789,7 +847,10 @@ mod tests {
         assert_eq!(module_name, "fake");
         assert!(result.is_ok());
 
-        let phases = progress_rx.iter().map(|progress| progress.phase).collect::<Vec<_>>();
+        let phases = progress_rx
+            .iter()
+            .map(|progress| progress.phase)
+            .collect::<Vec<_>>();
         assert_eq!(phases, vec![UpdatePhase::Running, UpdatePhase::Completed]);
     }
 

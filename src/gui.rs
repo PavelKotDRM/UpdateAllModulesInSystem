@@ -1,12 +1,11 @@
 //! Графический интерфейс приложения на базе `egui`/`eframe`.
 
 use crate::app::{
-    discover_modules, run_updates_with_progress, ModuleUpdateProgress, SelectionFilter,
-    UpdatePhase,
+    ModuleUpdateProgress, SelectionFilter, UpdatePhase, discover_modules, run_updates_with_progress,
 };
 use crate::model::ModuleSnapshot;
 use crate::system;
-use eframe::{egui, App, Frame, NativeOptions};
+use eframe::{App, Frame, NativeOptions, egui};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -171,7 +170,8 @@ impl GuiApp {
                 }
             });
 
-            let results = run_updates_with_progress(&modules, force_yes, &log_tx, Some(progress_tx));
+            let results =
+                run_updates_with_progress(&modules, force_yes, &log_tx, Some(progress_tx));
             let summary = if results.is_empty() {
                 String::from("Нет выбранных модулей с доступными обновлениями")
             } else if results.iter().all(|(_, result)| result.is_ok()) {
@@ -340,14 +340,12 @@ impl GuiApp {
             })
             .collect();
 
-        if let Err(error) =
-            save_gui_state(
-                &self.persisted_selection,
-                &self.persisted_update_selection,
-                self.auto_yes,
-                self.show_not_found,
-            )
-        {
+        if let Err(error) = save_gui_state(
+            &self.persisted_selection,
+            &self.persisted_update_selection,
+            self.auto_yes,
+            self.show_not_found,
+        ) {
             self.logs
                 .push(format!("Не удалось сохранить состояние GUI: {error}"));
         }
@@ -422,8 +420,7 @@ impl GuiApp {
                 self.show_selection_menu(ui);
             });
 
-            let auto_yes_response =
-                ui.checkbox(&mut self.auto_yes, "Автоматическое согласие (-y)");
+            let auto_yes_response = ui.checkbox(&mut self.auto_yes, "Автоматическое согласие (-y)");
             if auto_yes_response.changed() {
                 self.persist_state();
             }
@@ -451,7 +448,7 @@ impl GuiApp {
                 self.updates_count(),
                 self.visible_modules_count()
             ));
-            });
+        });
     }
 
     fn show_overview_tab(&self, ui: &mut egui::Ui) {
@@ -569,16 +566,16 @@ impl GuiApp {
             self.persist_state();
         }
 
-        let show_not_found_response = ui.checkbox(
-            &mut self.show_not_found,
-            "Показывать не найденные модули",
-        );
+        let show_not_found_response =
+            ui.checkbox(&mut self.show_not_found, "Показывать не найденные модули");
         if show_not_found_response.changed() {
             self.persist_state();
         }
 
         ui.add_space(8.0);
-        ui.label("Состояние выбранных модулей и настройки отображения сохраняются между запусками.");
+        ui.label(
+            "Состояние выбранных модулей и настройки отображения сохраняются между запусками.",
+        );
 
         ui.add_space(8.0);
         ui.separator();
@@ -657,7 +654,8 @@ impl GuiApp {
                         .default_open(false)
                         .show(ui, |ui| {
                             let mut update_selection_changed = false;
-                            for (update, detail_line) in module.updates.iter_mut().zip(detail_lines) {
+                            for (update, detail_line) in module.updates.iter_mut().zip(detail_lines)
+                            {
                                 ui.horizontal_wrapped(|ui| {
                                     let response = ui.checkbox(&mut update.selected, "");
                                     if response.changed() {
@@ -668,7 +666,8 @@ impl GuiApp {
                             }
 
                             if update_selection_changed {
-                                module.selected = module.updates.iter().any(|update| update.selected);
+                                module.selected =
+                                    module.updates.iter().any(|update| update.selected);
                                 *selection_changed = true;
                             }
                         });
@@ -707,19 +706,19 @@ impl App for GuiApp {
             self.show_toolbar(ui);
         });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            match self.active_tab {
-                GuiTab::Overview => self.show_overview_tab(ui),
-                GuiTab::Modules => self.show_modules_tab(ui),
-                GuiTab::Logs => self.show_logs_tab(ui),
-                GuiTab::Settings => self.show_settings_tab(ui),
-            }
+        egui::CentralPanel::default().show(ui, |ui| match self.active_tab {
+            GuiTab::Overview => self.show_overview_tab(ui),
+            GuiTab::Modules => self.show_modules_tab(ui),
+            GuiTab::Logs => self.show_logs_tab(ui),
+            GuiTab::Settings => self.show_settings_tab(ui),
         });
     }
 }
 
 fn gui_state_path() -> Option<PathBuf> {
-    std::env::current_dir().ok().map(|cwd| cwd.join(GUI_STATE_FILE))
+    std::env::current_dir()
+        .ok()
+        .map(|cwd| cwd.join(GUI_STATE_FILE))
 }
 
 fn load_gui_state() -> GuiState {
@@ -740,7 +739,8 @@ fn save_gui_state(
     auto_yes: bool,
     show_not_found: bool,
 ) -> anyhow::Result<()> {
-    let path = gui_state_path().ok_or_else(|| anyhow::anyhow!("не удалось определить рабочую директорию"))?;
+    let path = gui_state_path()
+        .ok_or_else(|| anyhow::anyhow!("не удалось определить рабочую директорию"))?;
     let state = GuiState {
         selected_modules: selection.iter().cloned().collect(),
         auto_yes: Some(auto_yes),

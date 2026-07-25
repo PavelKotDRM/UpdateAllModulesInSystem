@@ -2,7 +2,7 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{capture_command, heuristic_parse_updates, stream_command, UpdaterError};
+use crate::updater::{UpdaterError, capture_command, heuristic_parse_updates, stream_command};
 use crate::updaters::common::{heuristic_check, stream_checked, stream_checked_refs};
 use std::sync::mpsc::Sender;
 

@@ -54,7 +54,12 @@ mod tests {
 
     #[test]
     fn parses_check_and_skip_flags() {
-        let cli = Cli::parse_from(["update_all_modules", "--check", "--skip-system", "--skip-pip"]);
+        let cli = Cli::parse_from([
+            "update_all_modules",
+            "--check",
+            "--skip-system",
+            "--skip-pip",
+        ]);
         assert!(cli.check);
         assert!(cli.skip_system);
         assert!(cli.skip_pip);
@@ -84,11 +89,7 @@ mod tests {
 
     #[test]
     fn rejects_conflicting_tool_filters() {
-        let result = Cli::try_parse_from([
-            "update_all_modules",
-            "--skip-tools",
-            "--only-tools",
-        ]);
+        let result = Cli::try_parse_from(["update_all_modules", "--skip-tools", "--only-tools"]);
         assert!(result.is_err());
     }
 }

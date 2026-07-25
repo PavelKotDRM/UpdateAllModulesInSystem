@@ -276,14 +276,14 @@ pub fn stream_command(
             source,
         })?;
 
-    let stdout = child.stdout.take().ok_or_else(|| UpdaterError::Message(format!(
-        "{}: не удалось получить stdout",
-        program
-    )))?;
-    let stderr = child.stderr.take().ok_or_else(|| UpdaterError::Message(format!(
-        "{}: не удалось получить stderr",
-        program
-    )))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| UpdaterError::Message(format!("{}: не удалось получить stdout", program)))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| UpdaterError::Message(format!("{}: не удалось получить stderr", program)))?;
 
     let stdout_sender = log_sender.clone();
     let stderr_sender = log_sender.clone();
@@ -310,17 +310,24 @@ pub fn stream_command(
     })
 }
 
-fn pump_stream<R: Read + Send + 'static>(reader: R, sender: Sender<String>, label: &'static str) -> Result<String, UpdaterError> {
+fn pump_stream<R: Read + Send + 'static>(
+    reader: R,
+    sender: Sender<String>,
+    label: &'static str,
+) -> Result<String, UpdaterError> {
     let mut reader = BufReader::new(reader);
     let mut buffer = Vec::new();
     let mut collected = String::new();
 
     loop {
         buffer.clear();
-        let read = reader.read_until(b'\n', &mut buffer).map_err(|source| UpdaterError::StreamError {
-            program: label.to_owned(),
-            source,
-        })?;
+        let read =
+            reader
+                .read_until(b'\n', &mut buffer)
+                .map_err(|source| UpdaterError::StreamError {
+                    program: label.to_owned(),
+                    source,
+                })?;
 
         if read == 0 {
             break;
@@ -417,7 +424,9 @@ fn looks_like_noise(line: &str) -> bool {
         || lower.starts_with("name")
         || lower.starts_with("version")
         || lower.starts_with("package")
-        || line.chars().all(|ch| ch == '-' || ch == '=' || ch.is_whitespace())
+        || line
+            .chars()
+            .all(|ch| ch == '-' || ch == '=' || ch.is_whitespace())
 }
 
 fn parse_update_line(manager: &'static str, line: &str) -> Option<PackageUpdate> {
@@ -437,7 +446,11 @@ fn parse_update_line(manager: &'static str, line: &str) -> Option<PackageUpdate>
 
     let current = tokens.get(1).copied().unwrap_or("?");
     let available = tokens.get(2).copied().unwrap_or("?");
-    Some(PackageUpdate::new(format!("{manager}:{name_token}"), current, available))
+    Some(PackageUpdate::new(
+        format!("{manager}:{name_token}"),
+        current,
+        available,
+    ))
 }
 
 #[cfg(test)]

@@ -61,7 +61,11 @@ pub(super) fn parse_winget_updates(text: &str) -> Vec<PackageUpdate> {
                 columns.source.unwrap_or_else(|| line.chars().count()),
             )
             .trim();
-            if name.is_empty() || package_id.is_empty() || current.is_empty() || available.is_empty() {
+            if name.is_empty()
+                || !is_single_token(package_id)
+                || !is_single_token(current)
+                || !is_single_token(available)
+            {
                 return None;
             }
 
@@ -72,6 +76,10 @@ pub(super) fn parse_winget_updates(text: &str) -> Vec<PackageUpdate> {
             ))
         })
         .collect()
+}
+
+fn is_single_token(value: &str) -> bool {
+    !value.is_empty() && !value.chars().any(char::is_whitespace)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -185,6 +193,20 @@ Python 3.12      Python.Python.3.12    3.12.0      3.12.4\n\
     }
 
     #[test]
+    fn parse_winget_updates_ignores_unknown_version_footer() {
+        let text = "\
+Name             Id                    Version     Available\n\
+----------------------------------------------------------------\n\
+Git              Git.Git               2.45.0      2.46.0\n\
+1 package(s) have version numbers that cannot be determined. Use --include-unknown to see all results.\n\
+";
+
+        let updates = parse_winget_updates(text);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "winget:Git | Git.Git");
+    }
+
+    #[test]
     fn parse_winget_updates_reads_source_column_without_version_shift() {
         let text = "\
 Name                                      Id                                Version      Available    Source\n\
@@ -257,9 +279,6 @@ Microsoft Visual C++ 2013 Redistribut...  Microsoft.VCRedist.2013.x64       12.0
         let object = r#"{"title":"Security Update KB5000001"}"#;
         let updates = parse_windows_update_items(object).expect("object json should parse");
         assert_eq!(updates.len(), 1);
-        assert_eq!(
-            updates[0].name,
-            "windows-update:Security Update KB5000001"
-        );
+        assert_eq!(updates[0].name, "windows-update:Security Update KB5000001");
     }
 }

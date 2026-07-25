@@ -2,8 +2,9 @@
 
 use crate::model::ModuleKind;
 
-mod core;
 mod common;
+mod core;
+mod node_tools;
 mod parsers;
 mod python_tools;
 mod unix_managers;
@@ -11,6 +12,7 @@ mod windows_tools;
 
 pub use core::UpdaterDescriptor;
 use core::UpdaterSpec;
+use node_tools::*;
 use python_tools::*;
 use unix_managers::*;
 use windows_tools::*;
@@ -151,6 +153,30 @@ const REGISTRY_SPECS: &[UpdaterSpec] = &[
         installed: installed_rustup,
         check: check_rustup_updates,
         apply: apply_rustup_updates,
+    },
+    UpdaterSpec {
+        name: "node",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: node_installed,
+        check: node_check_updates,
+        apply: node_apply_updates,
+    },
+    UpdaterSpec {
+        name: "npm",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: npm_installed,
+        check: npm_check_updates,
+        apply: npm_apply_updates,
+    },
+    UpdaterSpec {
+        name: "pnpm",
+        kind: ModuleKind::Tool,
+        requires_elevation: false,
+        installed: pnpm_installed,
+        check: pnpm_check_updates,
+        apply: pnpm_apply_updates,
     },
     UpdaterSpec {
         name: "msys2",

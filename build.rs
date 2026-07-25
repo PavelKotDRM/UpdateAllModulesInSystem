@@ -9,10 +9,12 @@ fn main() {
         .args(&["describe", "--tags", "--dirty", "--always"])
         .output()
         .ok()
-        .and_then(|o| if o.status.success() {
-            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-        } else {
-            None
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
         });
 
     // Получаем текущий git-хэш (опционально)
@@ -20,10 +22,12 @@ fn main() {
         .args(&["rev-parse", "--short", "HEAD"])
         .output()
         .ok()
-        .and_then(|o| if o.status.success() {
-            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-        } else {
-            None
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
         });
 
     let git_hash_val = git_hash.as_deref().unwrap_or("no-git");

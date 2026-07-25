@@ -109,7 +109,7 @@ pub fn hide_windows_console_if_needed(gui_mode: bool) {
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::System::Console::GetConsoleWindow;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
 
         let window = GetConsoleWindow();
         if !window.is_null() {

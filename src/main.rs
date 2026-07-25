@@ -110,11 +110,15 @@ fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<()> {
     }
 
     let (log_tx, log_rx) = std::sync::mpsc::channel::<String>();
-    let update_modules: Vec<_> = modules.into_iter().filter(|module| module.selected).collect();
+    let update_modules: Vec<_> = modules
+        .into_iter()
+        .filter(|module| module.selected)
+        .collect();
     let force_yes = cli.yes;
     let verbose = cli.verbose;
 
-    let update_handle = std::thread::spawn(move || app::run_updates(&update_modules, force_yes, &log_tx));
+    let update_handle =
+        std::thread::spawn(move || app::run_updates(&update_modules, force_yes, &log_tx));
 
     while let Ok(message) = log_rx.recv() {
         if verbose {

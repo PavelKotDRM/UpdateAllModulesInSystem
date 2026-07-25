@@ -1,7 +1,9 @@
 //! Общие вспомогательные функции для запуска команд и эвристической проверки.
 
 use crate::model::PackageUpdate;
-use crate::updater::{capture_command, heuristic_parse_updates, stream_command, CommandOutput, UpdaterError};
+use crate::updater::{
+    CommandOutput, UpdaterError, capture_command, heuristic_parse_updates, stream_command,
+};
 use std::sync::mpsc::Sender;
 
 fn command_failed(program: &str, output: CommandOutput) -> UpdaterError {

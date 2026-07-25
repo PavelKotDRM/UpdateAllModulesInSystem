@@ -40,7 +40,11 @@ impl PackageUpdate {
     /// let update = PackageUpdate::new("pip:requests", "2.31.0", "2.32.0");
     /// assert!(update.selected);
     /// ```
-    pub fn new(name: impl Into<String>, current_version: impl Into<String>, available_version: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        current_version: impl Into<String>,
+        available_version: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             current_version: current_version.into(),
@@ -235,7 +239,10 @@ mod tests {
     fn detail_lines_returns_placeholder_when_no_updates() {
         let module = ModuleSnapshot::new("pip", ModuleKind::Python, false);
         let details = module.detail_lines();
-        assert_eq!(details, vec!["Список конкретных обновлений пуст".to_owned()]);
+        assert_eq!(
+            details,
+            vec!["Список конкретных обновлений пуст".to_owned()]
+        );
     }
 
     #[test]

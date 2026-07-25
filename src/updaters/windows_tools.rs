@@ -2,9 +2,13 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{capture_command, heuristic_parse_updates, stream_command, CommandOutput, UpdaterError};
+use crate::updater::{
+    CommandOutput, UpdaterError, capture_command, heuristic_parse_updates, stream_command,
+};
 use crate::updaters::common::stream_checked;
-use crate::updaters::parsers::{parse_choco_updates, parse_winget_updates, parse_windows_update_items};
+use crate::updaters::parsers::{
+    parse_choco_updates, parse_windows_update_items, parse_winget_updates,
+};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
@@ -28,8 +32,8 @@ pub(super) fn powershell_program() -> Option<&'static str> {
 }
 
 pub(super) fn run_powershell_capture(script: &str) -> Result<CommandOutput, UpdaterError> {
-    let program =
-        powershell_program().ok_or_else(|| UpdaterError::Message("powershell не найден".to_owned()))?;
+    let program = powershell_program()
+        .ok_or_else(|| UpdaterError::Message("powershell не найден".to_owned()))?;
     let args = vec![
         "-NoProfile".to_owned(),
         "-NonInteractive".to_owned(),
@@ -91,7 +95,10 @@ pub(super) fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError>
     }
     let output = capture_command(
         "winget",
-        &["upgrade".to_owned(), "--accept-source-agreements".to_owned()],
+        &[
+            "upgrade".to_owned(),
+            "--accept-source-agreements".to_owned(),
+        ],
     )?;
     Ok(parse_winget_updates(&output.merged_text()))
 }
@@ -118,7 +125,8 @@ pub(super) fn winget_apply_updates(
     let mut failed_packages = Vec::new();
 
     for update in selected_updates {
-        let (display_name, target_kind, target_value) = winget_target_from_update_name(&update.name);
+        let (display_name, target_kind, target_value) =
+            winget_target_from_update_name(&update.name);
         let mut args = vec!["upgrade".to_owned()];
         match target_kind {
             WingetTargetKind::Id => {
@@ -198,7 +206,11 @@ fn winget_target_from_update_name(update_name: &str) -> (String, WingetTargetKin
         let display = display.trim();
         let package_id = package_id.trim();
         if !package_id.is_empty() {
-            return (display.to_owned(), WingetTargetKind::Id, package_id.to_owned());
+            return (
+                display.to_owned(),
+                WingetTargetKind::Id,
+                package_id.to_owned(),
+            );
         }
     }
 

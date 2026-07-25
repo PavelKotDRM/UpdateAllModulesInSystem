@@ -2,7 +2,9 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{capture_command, command_exists, stream_command, CommandOutput, UpdaterError};
+use crate::updater::{
+    CommandOutput, UpdaterError, capture_command, command_exists, stream_command,
+};
 use crate::updaters::common::{heuristic_check, stream_checked, stream_checked_refs};
 use serde::Deserialize;
 use std::sync::mpsc::Sender;
@@ -230,7 +232,9 @@ fn current_uv_version() -> Result<String, UpdaterError> {
     let output = run_uv_self_capture(&["version".to_owned(), "--short".to_owned()])?;
     let version = output.stdout.trim();
     if version.is_empty() {
-        return Err(UpdaterError::Message("uv: не удалось определить текущую версию".to_owned()));
+        return Err(UpdaterError::Message(
+            "uv: не удалось определить текущую версию".to_owned(),
+        ));
     }
 
     Ok(version.trim_start_matches('v').to_owned())
