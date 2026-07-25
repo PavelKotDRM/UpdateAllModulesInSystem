@@ -46,6 +46,21 @@ enum GuiTab {
     Settings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModuleSelectionState {
+    None,
+    Partial,
+    All,
+}
+
+fn module_selection_state(selected_count: usize, total_count: usize) -> ModuleSelectionState {
+    match (selected_count, total_count) {
+        (0, _) => ModuleSelectionState::None,
+        (selected, total) if selected == total => ModuleSelectionState::All,
+        _ => ModuleSelectionState::Partial,
+    }
+}
+
 /// Корневое состояние и контроллер GUI-приложения.
 pub struct GuiApp {
     filter: SelectionFilter,
@@ -564,6 +579,15 @@ impl GuiApp {
 
         ui.add_space(8.0);
         ui.label("Состояние выбранных модулей и настройки отображения сохраняются между запусками.");
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.small(format!("Версия: {}", crate::build_info::VERSION));
+        ui.small(format!("Коммит: {}", crate::build_info::GIT_HASH));
+        ui.small(format!(
+            "Описание сборки: {}",
+            crate::build_info::DESCRIPTION
+        ));
     }
 
     fn render_module_card(
@@ -577,7 +601,30 @@ impl GuiApp {
             ui.group(|ui| {
                 ui.set_min_width(320.0);
                 ui.horizontal_wrapped(|ui| {
-                    let response = ui.checkbox(&mut module.selected, "");
+                    let response = if module.updates.is_empty() {
+                        ui.checkbox(&mut module.selected, "")
+                    } else {
+                        let selected_count = module
+                            .updates
+                            .iter()
+                            .filter(|update| update.selected)
+                            .count();
+                        let state = module_selection_state(selected_count, module.updates.len());
+                        let mut select_all = state == ModuleSelectionState::All;
+                        let response = ui.add(
+                            egui::Checkbox::new(&mut select_all, "")
+                                .indeterminate(state == ModuleSelectionState::Partial),
+                        );
+
+                        if response.changed() {
+                            module.selected = select_all;
+                            for update in &mut module.updates {
+                                update.selected = select_all;
+                            }
+                        }
+
+                        response
+                    };
                     if response.changed() {
                         *selection_changed = true;
                     }
@@ -609,14 +656,20 @@ impl GuiApp {
                     egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
                         .default_open(false)
                         .show(ui, |ui| {
+                            let mut update_selection_changed = false;
                             for (update, detail_line) in module.updates.iter_mut().zip(detail_lines) {
                                 ui.horizontal_wrapped(|ui| {
                                     let response = ui.checkbox(&mut update.selected, "");
                                     if response.changed() {
-                                        *selection_changed = true;
+                                        update_selection_changed = true;
                                     }
                                     ui.label(detail_line);
                                 });
+                            }
+
+                            if update_selection_changed {
+                                module.selected = module.updates.iter().any(|update| update.selected);
+                                *selection_changed = true;
                             }
                         });
                 }
@@ -645,8 +698,10 @@ fn phase_color(phase: UpdatePhase) -> egui::Color32 {
 impl App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
         self.process_events();
-        let ctx = ui.ctx().clone();
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if self.busy {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
 
         egui::Panel::top("toolbar").show(ui, |ui| {
             self.show_toolbar(ui);
@@ -755,4 +810,16 @@ pub fn launch_gui(filter: SelectionFilter, auto_yes: bool) -> anyhow::Result<()>
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_selection_state_distinguishes_none_partial_and_all() {
+        assert_eq!(module_selection_state(0, 3), ModuleSelectionState::None);
+        assert_eq!(module_selection_state(1, 3), ModuleSelectionState::Partial);
+        assert_eq!(module_selection_state(3, 3), ModuleSelectionState::All);
+    }
 }

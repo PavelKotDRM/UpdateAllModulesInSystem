@@ -38,31 +38,87 @@ pub(super) fn parse_windows_update_items(text: &str) -> Result<Vec<PackageUpdate
 }
 
 pub(super) fn parse_winget_updates(text: &str) -> Vec<PackageUpdate> {
-    text.lines()
+    let mut lines = text.lines();
+    let Some(header) = lines.find(|line| winget_column_positions(line).is_some()) else {
+        return Vec::new();
+    };
+    let Some(columns) = winget_column_positions(header) else {
+        return Vec::new();
+    };
+
+    lines
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .filter(|line| !line.starts_with("Name") && !line.starts_with('-') && !line.starts_with("----"))
+        .filter(|line| !line.starts_with('-') && !line.starts_with("----"))
         .filter(|line| !line.to_ascii_lowercase().contains("upgrades available"))
         .filter_map(|line| {
-            let cols = split_columns_by_wide_spaces(line);
-            if cols.len() < 4 {
-                return None;
-            }
-
-            let name = cols.first()?.trim();
-            let current = cols.get(2)?.trim();
-            let available = cols.get(3)?.trim();
-            if name.is_empty() || current.is_empty() || available.is_empty() {
+            let name = slice_chars(line, columns.name, columns.id).trim();
+            let package_id = slice_chars(line, columns.id, columns.version).trim();
+            let current = slice_chars(line, columns.version, columns.available).trim();
+            let available = slice_chars(
+                line,
+                columns.available,
+                columns.source.unwrap_or_else(|| line.chars().count()),
+            )
+            .trim();
+            if name.is_empty() || package_id.is_empty() || current.is_empty() || available.is_empty() {
                 return None;
             }
 
             Some(PackageUpdate::new(
-                format!("winget:{name}"),
+                format!("winget:{name} | {package_id}"),
                 current,
                 available,
             ))
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WingetColumnPositions {
+    name: usize,
+    id: usize,
+    version: usize,
+    available: usize,
+    source: Option<usize>,
+}
+
+fn winget_column_positions(header: &str) -> Option<WingetColumnPositions> {
+    let name = find_column_start(header, &["Name", "Имя"])?;
+    let id = find_column_start(header, &["Id", "ИД"])?;
+    let version = find_column_start(header, &["Version", "Версия"])?;
+    let available = find_column_start(header, &["Available", "Доступна"])?;
+    let source = find_column_start(header, &["Source", "Источник"]);
+
+    (name < id && id < version && version < available).then_some(WingetColumnPositions {
+        name,
+        id,
+        version,
+        available,
+        source,
+    })
+}
+
+fn find_column_start(header: &str, labels: &[&str]) -> Option<usize> {
+    labels.iter().find_map(|label| {
+        header
+            .find(label)
+            .map(|byte_index| header[..byte_index].chars().count())
+    })
+}
+
+fn slice_chars(text: &str, start: usize, end: usize) -> &str {
+    let start_byte = text
+        .char_indices()
+        .nth(start)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    let end_byte = text
+        .char_indices()
+        .nth(end)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    &text[start_byte..end_byte]
 }
 
 pub(super) fn parse_choco_updates(text: &str) -> Vec<PackageUpdate> {
@@ -92,44 +148,9 @@ pub(super) fn parse_choco_updates(text: &str) -> Vec<PackageUpdate> {
         .collect()
 }
 
-pub(super) fn split_columns_by_wide_spaces(line: &str) -> Vec<String> {
-    let mut columns = Vec::new();
-    let mut current = String::new();
-    let mut spaces = 0usize;
-
-    for ch in line.chars() {
-        if ch == ' ' {
-            spaces += 1;
-            if spaces >= 2 {
-                if !current.trim().is_empty() {
-                    columns.push(current.trim().to_owned());
-                    current.clear();
-                }
-                continue;
-            }
-        } else {
-            spaces = 0;
-        }
-        current.push(ch);
-    }
-
-    if !current.trim().is_empty() {
-        columns.push(current.trim().to_owned());
-    }
-
-    columns
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn split_columns_by_wide_spaces_splits_expected_columns() {
-        let line = "Git.Git         Git   2.45.0     2.46.0";
-        let columns = split_columns_by_wide_spaces(line);
-        assert_eq!(columns, vec!["Git.Git", "Git", "2.45.0", "2.46.0"]);
-    }
 
     #[test]
     fn parse_choco_updates_reads_limit_output_lines() {
@@ -157,10 +178,70 @@ Python 3.12      Python.Python.3.12    3.12.0      3.12.4\n\
 
         let updates = parse_winget_updates(text);
         assert_eq!(updates.len(), 2);
-        assert_eq!(updates[0].name, "winget:Git");
+        assert_eq!(updates[0].name, "winget:Git | Git.Git");
         assert_eq!(updates[0].current_version, "2.45.0");
         assert_eq!(updates[0].available_version, "2.46.0");
-        assert_eq!(updates[1].name, "winget:Python 3.12");
+        assert_eq!(updates[1].name, "winget:Python 3.12 | Python.Python.3.12");
+    }
+
+    #[test]
+    fn parse_winget_updates_reads_source_column_without_version_shift() {
+        let text = "\
+Name                                      Id                                Version      Available    Source\n\
+-----------------------------------------------------------------------------------------------------------\n\
+Epic Online Services                      EpicGames.EOS                     4.3.1        4.3.2        winget\n\
+Microsoft Visual C++ 2013 Redistribut...  Microsoft.VCRedist.2013.x64       12.0.30501   12.0.40664.0 winget\n\
+";
+
+        let updates = parse_winget_updates(text);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(
+            updates[0].name,
+            "winget:Epic Online Services | EpicGames.EOS"
+        );
+        assert_eq!(updates[0].current_version, "4.3.1");
+        assert_eq!(updates[0].available_version, "4.3.2");
+        assert_eq!(
+            updates[1].name,
+            "winget:Microsoft Visual C++ 2013 Redistribut... | Microsoft.VCRedist.2013.x64"
+        );
+        assert_eq!(updates[1].current_version, "12.0.30501");
+        assert_eq!(updates[1].available_version, "12.0.40664.0");
+    }
+
+    #[test]
+    fn parse_winget_updates_uses_header_boundaries_for_redirected_output() {
+        let text = format!(
+            "{:<61}{:<29}{:<19}{:<21}Source\n{}\n{:<61}{:<29}{:<19}{:<21}winget\n{:<61}{:<29}{:<19}{:<21}winget\n2 upgrades available.\n",
+            "Name",
+            "Id",
+            "Version",
+            "Available",
+            "-".repeat(136),
+            "Epic Online Services",
+            "EpicGames.EpicOnlineServices",
+            "4.2.1",
+            "4.3.1",
+            "Microsoft Visual C++ 2013 Redistributable (x86) - 12.0.30501",
+            "Microsoft.VCRedist.2013.x86",
+            "12.0.30501.0",
+            "12.0.40664.0",
+        );
+
+        let updates = parse_winget_updates(&text);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(
+            updates[0].name,
+            "winget:Epic Online Services | EpicGames.EpicOnlineServices"
+        );
+        assert_eq!(updates[0].current_version, "4.2.1");
+        assert_eq!(updates[0].available_version, "4.3.1");
+        assert_eq!(
+            updates[1].name,
+            "winget:Microsoft Visual C++ 2013 Redistributable (x86) - 12.0.30501 | Microsoft.VCRedist.2013.x86"
+        );
+        assert_eq!(updates[1].current_version, "12.0.30501.0");
+        assert_eq!(updates[1].available_version, "12.0.40664.0");
     }
 
     #[test]

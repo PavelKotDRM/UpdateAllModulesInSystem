@@ -1,6 +1,7 @@
 //! Точка входа приложения: разбор CLI, выбор режима и запуск обновлений.
 
 mod app;
+mod build_info;
 mod cli;
 mod gui;
 mod model;

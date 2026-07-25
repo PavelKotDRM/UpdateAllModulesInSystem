@@ -39,21 +39,6 @@ pub(super) fn run_powershell_capture(script: &str) -> Result<CommandOutput, Upda
     capture_command(program, &args)
 }
 
-pub(super) fn run_powershell_stream(
-    script: &str,
-    log_sender: &Sender<String>,
-) -> Result<CommandOutput, UpdaterError> {
-    let program =
-        powershell_program().ok_or_else(|| UpdaterError::Message("powershell не найден".to_owned()))?;
-    let args = vec![
-        "-NoProfile".to_owned(),
-        "-NonInteractive".to_owned(),
-        "-Command".to_owned(),
-        script.to_owned(),
-    ];
-    stream_command(program, &args, log_sender)
-}
-
 pub(super) fn windows_update_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     if !windows_update_installed() {
         return Ok(Vec::new());
@@ -93,99 +78,11 @@ pub(super) fn windows_update_apply_updates(
     selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    if !windows_update_installed() {
-        return Ok(());
-    }
-
-    let script = r#"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-$ErrorActionPreference = 'Stop'
-$session = New-Object -ComObject Microsoft.Update.Session
-$searcher = $session.CreateUpdateSearcher()
-$searchResult = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
-if ($searchResult.Updates.Count -eq 0) {
-    Write-Output 'Windows Update: обновления не найдены'
-    exit 0
-}
-
-$selected = @()
-if ('__SELECTED_UPDATES_JSON__' -ne '') {
-    $selected = '__SELECTED_UPDATES_JSON__' | ConvertFrom-Json
-}
-
-$updates = New-Object -ComObject Microsoft.Update.UpdateColl
-for ($i = 0; $i -lt $searchResult.Updates.Count; $i++) {
-    $candidate = $searchResult.Updates.Item($i)
-    if ($selected.Count -eq 0 -or $selected -contains $candidate.Title) {
-        [void]$updates.Add($candidate)
-    }
-}
-
-if ($updates.Count -eq 0) {
-    Write-Output 'Windows Update: по текущему выбору обновлений нет'
-    exit 0
-}
-
-Write-Output ("Windows Update: найдено обновлений: " + $updates.Count)
-$downloader = $session.CreateUpdateDownloader()
-$downloader.Updates = $updates
-[void]$downloader.Download()
-
-$installer = $session.CreateUpdateInstaller()
-$installer.Updates = $updates
-$installResult = $installer.Install()
-
-$resultCode = [int]$installResult.ResultCode
-$resultDescription = switch ($resultCode) {
-    0 { 'не начато (NotStarted)' }
-    1 { 'в процессе (InProgress)' }
-    2 { 'успешно (Succeeded)' }
-    3 { 'успешно с ошибками (SucceededWithErrors)' }
-    4 { 'ошибка (Failed)' }
-    5 { 'прервано (Aborted)' }
-    default { 'неизвестный код' }
-}
-Write-Output ("Windows Update: код результата: " + $resultCode + " (" + $resultDescription + ")")
-if ($installResult.RebootRequired) {
-    Write-Output 'Windows Update: требуется перезагрузка системы'
-}
-
-if ($resultCode -gt 3) {
-    [Console]::Error.WriteLine('Windows Update: установка завершилась с ошибкой')
-    exit 1
-}
-exit 0
-"#;
-
-    let selected_titles: Vec<String> = selected_updates
-        .iter()
-        .map(|update| {
-            update
-                .name
-                .strip_prefix("windows-update:")
-                .unwrap_or(update.name.as_str())
-                .to_owned()
-        })
-        .collect();
-    let selected_json = if selected_titles.is_empty() {
-        String::new()
-    } else {
-        serde_json::to_string(&selected_titles)?
-    };
-    let script = script.replace("__SELECTED_UPDATES_JSON__", &selected_json.replace('"', "''"));
-
-    let output = run_powershell_stream(&script, log_sender)?;
-    if output.success {
-        Ok(())
-    } else {
-        let program = powershell_program().unwrap_or("powershell");
-        Err(UpdaterError::CommandFailed {
-            program: program.to_owned(),
-            code: output.exit_code,
-            stderr: output.stderr,
-        })
-    }
+    let _ = log_sender.send(format!(
+        "Windows Update: доступно обновлений: {}. Автоматическая установка отключена; откройте Параметры → Центр обновления Windows и запустите обновление вручную",
+        selected_updates.len()
+    ));
+    Ok(())
 }
 
 pub(super) fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
@@ -218,24 +115,94 @@ pub(super) fn winget_apply_updates(
         return stream_checked("winget", &args, log_sender);
     }
 
+    let mut failed_packages = Vec::new();
+
     for update in selected_updates {
-        let name = update
-            .name
-            .strip_prefix("winget:")
-            .unwrap_or(update.name.as_str());
-        let mut args = vec![
-            "upgrade".to_owned(),
-            "--name".to_owned(),
-            name.to_owned(),
+        let (display_name, target_kind, target_value) = winget_target_from_update_name(&update.name);
+        let mut args = vec!["upgrade".to_owned()];
+        match target_kind {
+            WingetTargetKind::Id => {
+                args.push("--id".to_owned());
+                args.push(target_value.to_owned());
+                args.push("--exact".to_owned());
+            }
+            WingetTargetKind::Name => {
+                args.push("--name".to_owned());
+                args.push(target_value.to_owned());
+            }
+        }
+        args.extend([
             "--accept-source-agreements".to_owned(),
             "--accept-package-agreements".to_owned(),
-        ];
+        ]);
         if force_yes {
             args.push("--silent".to_owned());
         }
-        stream_checked("winget", &args, log_sender)?;
+
+        let output = stream_command("winget", &args, log_sender)?;
+        if !output.success {
+            let reason = winget_failure_reason(&output, &target_value);
+            let _ = log_sender.send(format!(
+                "winget: пакет `{display_name}` не обновлен: {reason}"
+            ));
+            failed_packages.push(display_name);
+        }
     }
-    Ok(())
+
+    if failed_packages.is_empty() {
+        Ok(())
+    } else {
+        Err(UpdaterError::Message(format!(
+            "winget: не удалось обновить {} пакетов: {}",
+            failed_packages.len(),
+            failed_packages.join(", ")
+        )))
+    }
+}
+
+fn winget_failure_reason(output: &CommandOutput, package_id: &str) -> String {
+    let merged = output.merged_text();
+    if merged
+        .to_ascii_lowercase()
+        .contains("install technology is different")
+    {
+        return format!(
+            "технология установки новой версии отличается от установленной; выполните `winget uninstall --id {package_id} --exact`, затем `winget install --id {package_id} --exact`"
+        );
+    }
+
+    if !output.stderr.trim().is_empty() {
+        return output.stderr.trim().to_owned();
+    }
+
+    let stdout = output.stdout.trim();
+    if !stdout.is_empty() {
+        return format!("{stdout} (код {:?})", output.exit_code);
+    }
+
+    format!("код завершения {:?}", output.exit_code)
+}
+
+enum WingetTargetKind {
+    Id,
+    Name,
+}
+
+fn winget_target_from_update_name(update_name: &str) -> (String, WingetTargetKind, String) {
+    let raw = update_name
+        .strip_prefix("winget:")
+        .unwrap_or(update_name)
+        .trim();
+
+    if let Some((display, package_id)) = raw.rsplit_once(" | ") {
+        let display = display.trim();
+        let package_id = package_id.trim();
+        if !package_id.is_empty() {
+            return (display.to_owned(), WingetTargetKind::Id, package_id.to_owned());
+        }
+    }
+
+    (raw.to_owned(), WingetTargetKind::Name, raw.to_owned())
 }
 
 pub(super) fn chocolatey_installed() -> bool {
@@ -362,4 +329,26 @@ fn msys2_stream_pacman(
 
     let fallback_args: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
     stream_command("pacman", &fallback_args, log_sender)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_update_apply_only_recommends_windows_update_center() {
+        let updates = vec![
+            PackageUpdate::new("windows-update:KB1", "installed", "available"),
+            PackageUpdate::new("windows-update:KB2", "installed", "available"),
+        ];
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+
+        let result = windows_update_apply_updates(true, &updates, &log_tx);
+
+        assert!(result.is_ok());
+        let message = log_rx.recv().expect("recommendation should be logged");
+        assert!(message.contains("доступно обновлений: 2"));
+        assert!(message.contains("Центр обновления Windows"));
+        assert!(message.contains("вручную"));
+    }
 }
