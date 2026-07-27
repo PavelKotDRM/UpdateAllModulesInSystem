@@ -207,7 +207,7 @@ const REGISTRY_SPECS: &[UpdaterSpec] = &[
     UpdaterSpec {
         name: "node",
         kind: ModuleKind::Tool,
-        requires_elevation: false,
+        requires_elevation: cfg!(target_os = "windows"),
         installed: node_installed,
         check: node_check_updates,
         apply: node_apply_updates,

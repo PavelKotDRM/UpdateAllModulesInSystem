@@ -5,17 +5,23 @@ use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command}
 use crate::updaters::common::stream_checked;
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 const MARKETPLACE_QUERY_URL: &str =
     "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery";
 const OPEN_VSX_API_URL: &str = "https://open-vsx.org/api";
+const MARKETPLACE_BATCH_SIZE: usize = 8;
+const MARKETPLACE_LATEST_FLAGS: u32 = 1 | 16 | 512;
+const MARKETPLACE_HISTORY_FLAGS: u32 = 1 | 16;
 
 #[derive(Debug, PartialEq)]
 struct InstalledExtension {
     id: String,
     version: String,
+    profile: Option<String>,
 }
 
 fn editor_installed(program: &str) -> bool {
@@ -24,12 +30,23 @@ fn editor_installed(program: &str) -> bool {
 
 fn check_editor_extensions(program: &str) -> Result<Vec<PackageUpdate>, UpdaterError> {
     let command = editor_command(program)?;
-    let output = capture_command(
-        &command,
-        &["--list-extensions".to_owned(), "--show-versions".to_owned()],
-    )?;
-    ensure_success(&command, &output)?;
-    let installed = parse_editor_extensions(&output.stdout);
+    let mut installed = Vec::new();
+    for profile in editor_profiles(program) {
+        let mut args = vec!["--list-extensions".to_owned(), "--show-versions".to_owned()];
+        if let Some(profile) = &profile {
+            args.extend(["--profile".to_owned(), profile.clone()]);
+        }
+
+        let output = capture_command(&command, &args)?;
+        ensure_success(&command, &output)?;
+        installed.extend(parse_editor_extensions(&output.stdout).into_iter().map(
+            |mut extension| {
+                extension.profile = profile.clone();
+                extension
+            },
+        ));
+    }
+
     let available_versions = if matches!(program, "code" | "code-insiders") {
         fetch_marketplace_versions(&installed)?
     } else {
@@ -46,11 +63,49 @@ fn fetch_marketplace_versions(
         return Ok(HashMap::new());
     }
 
-    let filters: Vec<Value> = installed
+    let mut extension_ids = installed
         .iter()
-        .map(|extension| {
+        .map(|extension| extension.id.to_ascii_lowercase())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    extension_ids.sort_unstable();
+
+    let client = Client::builder().http1_only().build()?;
+    let mut versions = HashMap::new();
+    for batch in extension_ids.chunks(MARKETPLACE_BATCH_SIZE) {
+        versions.extend(fetch_marketplace_batch(
+            &client,
+            batch,
+            MARKETPLACE_LATEST_FLAGS,
+        )?);
+    }
+
+    let missing_ids = extension_ids
+        .iter()
+        .filter(|extension_id| !versions.contains_key(*extension_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for extension_id in &missing_ids {
+        versions.extend(fetch_marketplace_batch(
+            &client,
+            std::slice::from_ref(extension_id),
+            MARKETPLACE_HISTORY_FLAGS,
+        )?);
+    }
+    Ok(versions)
+}
+
+fn fetch_marketplace_batch(
+    client: &Client,
+    extension_ids: &[String],
+    flags: u32,
+) -> Result<HashMap<String, String>, UpdaterError> {
+    let filters: Vec<Value> = extension_ids
+        .iter()
+        .map(|extension_id| {
             json!({
-                "criteria": [{ "filterType": 7, "value": extension.id }],
+                "criteria": [{ "filterType": 7, "value": extension_id }],
                 "pageNumber": 1,
                 "pageSize": 1,
                 "sortBy": 0,
@@ -58,10 +113,14 @@ fn fetch_marketplace_versions(
             })
         })
         .collect();
-    let response = Client::new()
+    let response = client
         .post(MARKETPLACE_QUERY_URL)
         .header("Accept", "application/json;api-version=7.2-preview.1")
-        .json(&json!({ "filters": filters, "assetTypes": [], "flags": 17 }))
+        .json(&json!({
+            "filters": filters,
+            "assetTypes": [],
+            "flags": flags
+        }))
         .send()?
         .error_for_status()?
         .json()?;
@@ -95,6 +154,13 @@ fn fetch_open_vsx_versions(
 }
 
 fn parse_marketplace_versions(response: &Value) -> HashMap<String, String> {
+    parse_marketplace_versions_for_platform(response, marketplace_target_platform())
+}
+
+fn parse_marketplace_versions_for_platform(
+    response: &Value,
+    target_platform: &str,
+) -> HashMap<String, String> {
     response
         .get("results")
         .and_then(Value::as_array)
@@ -105,11 +171,26 @@ fn parse_marketplace_versions(response: &Value) -> HashMap<String, String> {
         .filter_map(|extension| {
             let publisher = extension.pointer("/publisher/publisherName")?.as_str()?;
             let name = extension.get("extensionName")?.as_str()?;
-            let version = extension
-                .get("versions")?
-                .as_array()?
+            let versions = extension.get("versions")?.as_array()?;
+            let has_target_version = versions.iter().any(|version| {
+                version.get("targetPlatform").and_then(Value::as_str) == Some(target_platform)
+            });
+            let version = versions
                 .iter()
-                .find(|version| !is_pre_release(version))?
+                .find(|version| {
+                    !is_pre_release(version)
+                        && version.get("targetPlatform").and_then(Value::as_str)
+                            == Some(target_platform)
+                })
+                .or_else(|| {
+                    (!has_target_version)
+                        .then(|| {
+                            versions.iter().find(|version| {
+                                !is_pre_release(version) && version.get("targetPlatform").is_none()
+                            })
+                        })
+                        .flatten()
+                })?
                 .get("version")?
                 .as_str()?;
             Some((
@@ -118,6 +199,22 @@ fn parse_marketplace_versions(response: &Value) -> HashMap<String, String> {
             ))
         })
         .collect()
+}
+
+fn marketplace_target_platform() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => "win32-x64",
+        ("windows", "aarch64") => "win32-arm64",
+        ("windows", "x86") => "win32-ia32",
+        ("macos", "x86_64") => "darwin-x64",
+        ("macos", "aarch64") => "darwin-arm64",
+        ("linux", "x86_64") if cfg!(target_env = "musl") => "alpine-x64",
+        ("linux", "aarch64") if cfg!(target_env = "musl") => "alpine-arm64",
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("linux", "arm") => "linux-armhf",
+        _ => "universal",
+    }
 }
 
 fn is_pre_release(version: &Value) -> bool {
@@ -141,8 +238,13 @@ fn collect_extension_updates(
         .into_iter()
         .filter_map(|extension| {
             let available = available_versions.get(&extension.id.to_ascii_lowercase())?;
-            (extension.version != *available)
-                .then(|| PackageUpdate::new(extension.id, extension.version, available.clone()))
+            (extension.version != *available).then(|| {
+                let update = PackageUpdate::new(extension.id, extension.version, available.clone());
+                match extension.profile {
+                    Some(profile) => update.with_scope(profile),
+                    None => update,
+                }
+            })
         })
         .collect()
 }
@@ -154,27 +256,128 @@ fn apply_editor_extensions(
 ) -> Result<(), UpdaterError> {
     let command = editor_command(program)?;
     if selected_updates.is_empty() {
-        return stream_checked(&command, &["--update-extensions".to_owned()], log_sender);
+        for profile in editor_profiles(program) {
+            let mut args = vec!["--update-extensions".to_owned()];
+            if let Some(profile) = profile {
+                args.extend(["--profile".to_owned(), profile]);
+            }
+            stream_checked(&command, &args, log_sender)?;
+        }
+        return Ok(());
     }
 
     for update in selected_updates {
-        stream_checked(
-            &command,
-            &[
-                "--install-extension".to_owned(),
-                update.name.clone(),
-                "--force".to_owned(),
-            ],
-            log_sender,
-        )?;
+        let args = extension_install_args(update);
+        stream_checked(&command, &args, log_sender)?;
     }
 
     Ok(())
 }
 
+fn extension_install_args(update: &PackageUpdate) -> Vec<String> {
+    let mut args = vec![
+        "--install-extension".to_owned(),
+        update.name.clone(),
+        "--force".to_owned(),
+    ];
+    if let Some(profile) = &update.scope {
+        args.extend(["--profile".to_owned(), profile.clone()]);
+    }
+    args
+}
+
 fn editor_command(program: &str) -> Result<String, UpdaterError> {
     find_command(program)
         .ok_or_else(|| UpdaterError::Message(format!("{program}: команда редактора не найдена")))
+}
+
+fn editor_profiles(program: &str) -> Vec<Option<String>> {
+    let mut profiles = vec![None];
+    let Some(user_dir) = editor_user_dir(program) else {
+        return profiles;
+    };
+    let profile_root = user_dir.join("profiles");
+    let Ok(entries) = fs::read_dir(&profile_root) else {
+        return profiles;
+    };
+    let existing_ids = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|id| id != "builtin")
+        .collect::<HashSet<_>>();
+    if existing_ids.is_empty() {
+        return profiles;
+    }
+
+    let registry_path = user_dir.join("sync/profiles/lastSyncprofiles.json");
+    let Ok(registry) = fs::read_to_string(registry_path) else {
+        return profiles;
+    };
+    let mut names = parse_profile_names(&registry, &existing_ids);
+    names.sort_unstable_by_key(|name| name.to_ascii_lowercase());
+    profiles.extend(names.into_iter().map(Some));
+    profiles
+}
+
+fn editor_user_dir(program: &str) -> Option<PathBuf> {
+    let product_dir = match program {
+        "code" => "Code",
+        "code-insiders" => "Code - Insiders",
+        _ => return None,
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join(product_dir).join("User"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME").map(PathBuf::from).map(|path| {
+            path.join("Library/Application Support")
+                .join(product_dir)
+                .join("User")
+        });
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .map(|path| path.join(".config"))
+            })?;
+        Some(config_dir.join(product_dir).join("User"))
+    }
+}
+
+fn parse_profile_names(text: &str, existing_ids: &HashSet<String>) -> Vec<String> {
+    let Ok(envelope) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let Some(content) = envelope
+        .pointer("/syncData/content")
+        .and_then(Value::as_str)
+    else {
+        return Vec::new();
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<Value>>(content) else {
+        return Vec::new();
+    };
+
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?;
+            let name = entry.get("name")?.as_str()?;
+            existing_ids.contains(id).then(|| name.to_owned())
+        })
+        .collect()
 }
 
 fn ensure_success(program: &str, output: &CommandOutput) -> Result<(), UpdaterError> {
@@ -202,6 +405,7 @@ fn parse_editor_extensions(text: &str) -> Vec<InstalledExtension> {
             Some(InstalledExtension {
                 id: extension_id.to_owned(),
                 version: current_version.to_owned(),
+                profile: None,
             })
         })
         .collect()
@@ -266,9 +470,13 @@ editor_updater!(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_extension_updates, parse_editor_extensions, parse_marketplace_versions};
+    use super::{
+        collect_extension_updates, extension_install_args, parse_editor_extensions,
+        parse_marketplace_versions, parse_marketplace_versions_for_platform, parse_profile_names,
+    };
+    use crate::model::PackageUpdate;
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn parses_extension_ids_and_versions() {
@@ -307,6 +515,46 @@ mod tests {
     }
 
     #[test]
+    fn keeps_profile_on_extension_update() {
+        let mut installed = parse_editor_extensions("ms-python.python@1.0.0\n");
+        installed[0].profile = Some("Python".to_owned());
+        let available = HashMap::from([("ms-python.python".to_owned(), "2.0.0".to_owned())]);
+
+        let updates = collect_extension_updates(installed, &available);
+
+        assert_eq!(updates[0].scope.as_deref(), Some("Python"));
+    }
+
+    #[test]
+    fn installs_extension_into_its_source_profile() {
+        let update = PackageUpdate::new("ms-python.python", "1.0.0", "2.0.0").with_scope("Python");
+
+        assert_eq!(
+            extension_install_args(&update),
+            vec![
+                "--install-extension",
+                "ms-python.python",
+                "--force",
+                "--profile",
+                "Python"
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_only_locally_existing_profile_names() {
+        let content = serde_json::to_string(&json!([
+            { "id": "python-id", "name": "Python" },
+            { "id": "remote-id", "name": "Remote only" }
+        ]))
+        .unwrap();
+        let registry = json!({ "syncData": { "content": content } }).to_string();
+        let existing = HashSet::from(["python-id".to_owned()]);
+
+        assert_eq!(parse_profile_names(&registry, &existing), vec!["Python"]);
+    }
+
+    #[test]
     fn parses_marketplace_latest_versions() {
         let response = json!({
             "results": [{
@@ -330,5 +578,53 @@ mod tests {
         let versions = parse_marketplace_versions(&response);
 
         assert_eq!(versions["bierner.markdown-mermaid"], "1.32.1");
+    }
+
+    #[test]
+    fn marketplace_prefers_current_platform_over_old_universal_version() {
+        let response = json!({
+            "results": [{
+                "extensions": [{
+                    "extensionName": "cpptools",
+                    "publisher": { "publisherName": "ms-vscode" },
+                    "versions": [
+                        { "version": "1.33.4", "targetPlatform": "win32-x64", "properties": [] },
+                        { "version": "1.19.7", "targetPlatform": "win32-ia32", "properties": [] },
+                        { "version": "1.7.1", "properties": [] }
+                    ]
+                }]
+            }]
+        });
+
+        let versions = parse_marketplace_versions_for_platform(&response, "win32-x64");
+
+        assert_eq!(versions["ms-vscode.cpptools"], "1.33.4");
+    }
+
+    #[test]
+    fn marketplace_does_not_fall_back_when_platform_latest_is_prerelease() {
+        let response = json!({
+            "results": [{
+                "extensions": [{
+                    "extensionName": "cpptools",
+                    "publisher": { "publisherName": "ms-vscode" },
+                    "versions": [
+                        {
+                            "version": "1.33.4",
+                            "targetPlatform": "win32-x64",
+                            "properties": [{
+                                "key": "Microsoft.VisualStudio.Code.PreRelease",
+                                "value": "true"
+                            }]
+                        },
+                        { "version": "1.7.1", "properties": [] }
+                    ]
+                }]
+            }]
+        });
+
+        let versions = parse_marketplace_versions_for_platform(&response, "win32-x64");
+
+        assert!(!versions.contains_key("ms-vscode.cpptools"));
     }
 }

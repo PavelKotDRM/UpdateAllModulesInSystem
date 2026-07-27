@@ -222,7 +222,8 @@ pub fn find_command(program: &str) -> Option<String> {
 /// # Ok::<(), UpdaterError>(())
 /// ```
 pub fn capture_command(program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
-    let output = Command::new(program)
+    let executable = find_command(program).unwrap_or_else(|| program.to_owned());
+    let output = Command::new(executable)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -268,7 +269,8 @@ pub fn stream_command(
     args: &[String],
     log_sender: &Sender<String>,
 ) -> Result<CommandOutput, UpdaterError> {
-    let mut child = Command::new(program)
+    let executable = find_command(program).unwrap_or_else(|| program.to_owned());
+    let mut child = Command::new(executable)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -67,7 +67,7 @@ pub struct GuiApp {
     events_tx: RepaintSender<GuiEvent>,
     events_rx: Receiver<GuiEvent>,
     modules: Vec<ModuleSnapshot>,
-    logs: Vec<String>,
+    logs: BTreeMap<String, Vec<String>>,
     busy: bool,
     auto_yes: bool,
     status_line: String,
@@ -114,7 +114,7 @@ impl GuiApp {
             events_tx,
             events_rx,
             modules: Vec::new(),
-            logs: Vec::new(),
+            logs: BTreeMap::new(),
             busy: false,
             auto_yes,
             status_line: String::from("Ожидание запуска"),
@@ -234,7 +234,7 @@ impl GuiApp {
             for module in &mut self.modules {
                 if let Some(saved_updates) = self.persisted_update_selection.get(&module.name) {
                     for update in &mut module.updates {
-                        update.selected = saved_updates.contains(&update.name);
+                        update.selected = saved_updates.contains(&update.selection_key());
                     }
                 }
             }
@@ -245,7 +245,7 @@ impl GuiApp {
             module.selected = self.persisted_selection.contains(&module.name);
             if let Some(saved_updates) = self.persisted_update_selection.get(&module.name) {
                 for update in &mut module.updates {
-                    update.selected = saved_updates.contains(&update.name);
+                    update.selected = saved_updates.contains(&update.selection_key());
                 }
             }
         }
@@ -335,7 +335,7 @@ impl GuiApp {
                     .updates
                     .iter()
                     .filter(|update| update.selected)
-                    .map(|update| update.name.clone())
+                    .map(|update| update.selection_key())
                     .collect::<BTreeSet<_>>();
                 (module.name.clone(), selected_updates)
             })
@@ -347,15 +347,25 @@ impl GuiApp {
             self.auto_yes,
             self.show_not_found,
         ) {
-            self.logs
-                .push(format!("Не удалось сохранить состояние GUI: {error}"));
+            self.append_log(format!(
+                "[system] Не удалось сохранить состояние GUI: {error}"
+            ));
         }
+    }
+
+    fn append_log(&mut self, message: String) {
+        let (module, text) = split_module_log(&message);
+        self.logs.entry(module).or_default().push(text);
+    }
+
+    fn log_count(&self) -> usize {
+        self.logs.values().map(Vec::len).sum()
     }
 
     fn process_events(&mut self) {
         while let Ok(event) = self.events_rx.try_recv() {
             match event {
-                GuiEvent::Log(message) => self.logs.push(message),
+                GuiEvent::Log(message) => self.append_log(message),
                 GuiEvent::ModuleProgress(progress) => {
                     self.module_progress
                         .insert(progress.module_name.clone(), progress);
@@ -369,7 +379,7 @@ impl GuiApp {
                 }
                 GuiEvent::UpdateFinished(message) => {
                     self.busy = false;
-                    self.logs.push(format!("[summary] {message}"));
+                    self.append_log(format!("[summary] {message}"));
                     self.status_line = message;
                     self.started_scan = false;
                     self.start_scan();
@@ -383,12 +393,12 @@ impl GuiApp {
             Ok(path) => {
                 let message = format!("Логи экспортированы: {}", path.display());
                 self.status_line = message.clone();
-                self.logs.push(format!("[info] {message}"));
+                self.append_log(format!("[system] {message}"));
             }
             Err(error) => {
                 let message = format!("Не удалось экспортировать логи: {error}");
                 self.status_line = message.clone();
-                self.logs.push(format!("[error] {message}"));
+                self.append_log(format!("[system] Ошибка: {message}"));
             }
         }
     }
@@ -467,7 +477,7 @@ impl GuiApp {
             ui.separator();
             ui.label(format!("Требуют обновления: {}", self.updates_count()));
             ui.separator();
-            ui.label(format!("Логов накоплено: {}", self.logs.len()));
+            ui.label(format!("Логов накоплено: {}", self.log_count()));
         });
 
         ui.add_space(8.0);
@@ -536,7 +546,9 @@ impl GuiApp {
             if ui.button("Экспорт логов").clicked() {
                 self.export_logs();
             }
-            ui.label(format!("Записей: {}", self.logs.len()));
+            ui.label(format!("Модулей: {}", self.logs.len()));
+            ui.separator();
+            ui.label(format!("Записей: {}", self.log_count()));
         });
         ui.add_space(4.0);
 
@@ -548,8 +560,14 @@ impl GuiApp {
                 if self.logs.is_empty() {
                     ui.label("Логи пока пусты");
                 } else {
-                    for line in &self.logs {
-                        ui.monospace(line);
+                    for (module, lines) in &self.logs {
+                        egui::CollapsingHeader::new(format!("{module} ({})", lines.len()))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for line in lines {
+                                    ui.monospace(line);
+                                }
+                            });
                     }
                 }
             });
@@ -763,7 +781,19 @@ fn save_gui_state(
     Ok(())
 }
 
-fn export_logs_to_file(logs: &[String]) -> anyhow::Result<PathBuf> {
+fn split_module_log(message: &str) -> (String, String) {
+    if let Some(rest) = message.strip_prefix('[') {
+        if let Some((module, text)) = rest.split_once("] ") {
+            if !module.is_empty() {
+                return (module.to_owned(), text.to_owned());
+            }
+        }
+    }
+
+    ("system".to_owned(), message.to_owned())
+}
+
+fn export_logs_to_file(logs: &BTreeMap<String, Vec<String>>) -> anyhow::Result<PathBuf> {
     let cwd = std::env::current_dir()
         .map_err(|error| anyhow::anyhow!("не удалось определить рабочую директорию: {error}"))?;
 
@@ -779,8 +809,15 @@ fn export_logs_to_file(logs: &[String]) -> anyhow::Result<PathBuf> {
     let content = if logs.is_empty() {
         "Логи отсутствуют\n".to_owned()
     } else {
-        let mut text = logs.join("\n");
-        text.push('\n');
+        let mut text = String::new();
+        for (module, lines) in logs {
+            text.push_str(&format!("[{module}]\n"));
+            for line in lines {
+                text.push_str(line);
+                text.push('\n');
+            }
+            text.push('\n');
+        }
         text
     };
 
@@ -835,5 +872,17 @@ mod tests {
         assert_eq!(module_selection_state(0, 3), ModuleSelectionState::None);
         assert_eq!(module_selection_state(1, 3), ModuleSelectionState::Partial);
         assert_eq!(module_selection_state(3, 3), ModuleSelectionState::All);
+    }
+
+    #[test]
+    fn split_module_log_extracts_module_and_uses_system_fallback() {
+        assert_eq!(
+            split_module_log("[npm] [stdout] updated 2 packages"),
+            ("npm".to_owned(), "[stdout] updated 2 packages".to_owned())
+        );
+        assert_eq!(
+            split_module_log("Обновление завершено"),
+            ("system".to_owned(), "Обновление завершено".to_owned())
+        );
     }
 }

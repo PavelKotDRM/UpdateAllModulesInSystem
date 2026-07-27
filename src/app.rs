@@ -273,7 +273,7 @@ pub fn render_cli_table(modules: &[ModuleSnapshot]) -> String {
                 module
                     .updates
                     .iter()
-                    .map(|update| format!("{}→{}", update.name, update.available_version))
+                    .map(|update| format!("{}→{}", update.display_name(), update.available_version))
                     .collect::<Vec<_>>()
                     .join(", ")
             },

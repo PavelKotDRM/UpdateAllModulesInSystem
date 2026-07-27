@@ -17,6 +17,8 @@ pub struct PackageUpdate {
     pub current_version: String,
     /// Версия, доступная для установки.
     pub available_version: String,
+    /// Необязательная область установки, например профиль редактора.
+    pub scope: Option<String>,
     /// Признак, выбран ли пакет пользователем для обновления.
     pub selected: bool,
 }
@@ -49,8 +51,31 @@ impl PackageUpdate {
             name: name.into(),
             current_version: current_version.into(),
             available_version: available_version.into(),
+            scope: None,
             selected: true,
         }
+    }
+
+    /// Добавляет область установки к записи обновления.
+    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.scope = Some(scope.into());
+        self
+    }
+
+    /// Возвращает имя обновления с областью установки для интерфейса.
+    pub fn display_name(&self) -> String {
+        self.scope
+            .as_ref()
+            .map(|scope| format!("[{scope}] {}", self.name))
+            .unwrap_or_else(|| self.name.clone())
+    }
+
+    /// Возвращает стабильный ключ выбора с учетом области установки.
+    pub fn selection_key(&self) -> String {
+        self.scope
+            .as_ref()
+            .map(|scope| format!("scope::{scope}::{}", self.name))
+            .unwrap_or_else(|| self.name.clone())
     }
 }
 
@@ -181,6 +206,14 @@ impl ModuleSnapshot {
     /// let _label = snapshot.status_label();
     /// ```
     pub fn status_label(&self) -> String {
+        if self.name == "windows-update" {
+            if let ModuleStatus::UpdatesAvailable(count) = self.status {
+                return format!(
+                    "Доступны обновления ({count}). Установите их через Центр обновления Windows"
+                );
+            }
+        }
+
         self.status.label()
     }
 
@@ -212,7 +245,9 @@ impl ModuleSnapshot {
             .map(|update| {
                 format!(
                     "{}: {} -> {}",
-                    update.name, update.current_version, update.available_version
+                    update.display_name(),
+                    update.current_version,
+                    update.available_version
                 )
             })
             .collect()
@@ -257,5 +292,32 @@ mod tests {
         assert_eq!(details.len(), 2);
         assert_eq!(details[0], "requests: 2.31.0 -> 2.32.0");
         assert_eq!(details[1], "urllib3: 2.0.0 -> 2.1.0");
+    }
+
+    #[test]
+    fn detail_lines_include_update_scope() {
+        let mut module = ModuleSnapshot::new("vscode-extensions", ModuleKind::Tool, false);
+        module.updates =
+            vec![PackageUpdate::new("ms-python.python", "1.0.0", "2.0.0").with_scope("Python")];
+
+        assert_eq!(
+            module.detail_lines(),
+            vec!["[Python] ms-python.python: 1.0.0 -> 2.0.0".to_owned()]
+        );
+        assert_eq!(
+            module.updates[0].selection_key(),
+            "scope::Python::ms-python.python"
+        );
+    }
+
+    #[test]
+    fn windows_update_status_recommends_update_center() {
+        let mut module = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
+        module.status = ModuleStatus::UpdatesAvailable(2);
+
+        assert_eq!(
+            module.status_label(),
+            "Доступны обновления (2). Установите их через Центр обновления Windows"
+        );
     }
 }
