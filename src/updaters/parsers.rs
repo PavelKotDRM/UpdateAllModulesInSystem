@@ -4,6 +4,54 @@ use crate::model::PackageUpdate;
 use crate::updater::UpdaterError;
 use serde::Deserialize;
 
+pub(super) fn parse_apt_updates(text: &str, manager: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .map(str::trim)
+        .filter_map(|line| parse_apt_update_line(line, manager))
+        .collect()
+}
+
+fn parse_apt_update_line(line: &str, manager: &str) -> Option<PackageUpdate> {
+    if let Some(rest) = line.strip_prefix("Inst ") {
+        return parse_apt_get_install_line(rest, manager);
+    }
+
+    parse_apt_list_update_line(line, manager)
+}
+
+fn parse_apt_get_install_line(rest: &str, manager: &str) -> Option<PackageUpdate> {
+    let (name, version_info) = rest.split_once(char::is_whitespace)?;
+    let version_info = version_info.trim_start();
+    let (current, candidate_info) = if let Some(old_version) = version_info.strip_prefix('[') {
+        let (current, candidate_info) = old_version.split_once(']')?;
+        (current.trim(), candidate_info.trim_start())
+    } else {
+        ("not installed", version_info)
+    };
+    let candidate_info = candidate_info.strip_prefix('(')?;
+    let available = candidate_info.split_whitespace().next()?;
+
+    (!name.is_empty() && !current.is_empty() && !available.is_empty())
+        .then(|| PackageUpdate::new(format!("{manager}:{name}"), current, available))
+}
+
+fn parse_apt_list_update_line(line: &str, manager: &str) -> Option<PackageUpdate> {
+    let mut fields = line.split_whitespace();
+    let package = fields.next()?;
+    let available = fields.next()?;
+    let architecture = fields.next()?;
+    let details = fields.collect::<Vec<_>>().join(" ");
+    let old_version_info = details.strip_prefix('[')?.strip_suffix(']')?;
+    let current = old_version_info.split_whitespace().last()?.trim_start_matches(|ch| ch == ':' || ch == '=');
+    let name = package.split_once('/').map_or(package, |(name, _)| name);
+
+    (package.contains('/')
+        && !available.is_empty()
+        && !architecture.is_empty()
+        && !current.is_empty())
+        .then(|| PackageUpdate::new(format!("{manager}:{name}"), current, available))
+}
+
 pub(super) fn parse_windows_update_items(text: &str) -> Result<Vec<PackageUpdate>, UpdaterError> {
     #[derive(Debug, Deserialize)]
     struct WindowsUpdateItem {
@@ -177,6 +225,52 @@ pub(super) fn parse_msys2_updates(text: &str) -> Vec<PackageUpdate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_apt_updates_reads_list_versions() {
+        let text = "Listing...\ncode/stable 1.102.2-1753187809 amd64 [upgradable from: 1.101.2-1750797935]\n";
+
+        let updates = parse_apt_updates(text, "apt");
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "apt:code");
+        assert_eq!(updates[0].current_version, "1.101.2-1750797935");
+        assert_eq!(updates[0].available_version, "1.102.2-1753187809");
+    }
+
+    #[test]
+    fn parse_apt_updates_reads_alt_linux_simulation() {
+        let text = "Inst apt [0.5.15lorg2-alt88] (0.5.15lorg2-alt89 Sisyphus:classic [x86_64])\nInst glibc-core:i586 [6:2.38.0.76.e9f05-alt1] (6:2.38.0.76.e9f05-alt2 Sisyphus:classic [i586])\nConf apt (0.5.15lorg2-alt89 Sisyphus:classic [x86_64])\nRemv old-kernel [6.12.1-alt1]\n";
+
+        let updates = parse_apt_updates(text, "apt-get");
+
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "apt-get:apt");
+        assert_eq!(updates[0].current_version, "0.5.15lorg2-alt88");
+        assert_eq!(updates[0].available_version, "0.5.15lorg2-alt89");
+        assert_eq!(updates[1].name, "apt-get:glibc-core:i586");
+        assert_eq!(updates[1].current_version, "6:2.38.0.76.e9f05-alt1");
+        assert_eq!(updates[1].available_version, "6:2.38.0.76.e9f05-alt2");
+    }
+
+    #[test]
+    fn parse_apt_updates_reads_new_dependencies_from_simulation() {
+        let text = "Inst new-dependency (2.4.1-alt3 p11:classic [x86_64])\n";
+
+        let updates = parse_apt_updates(text, "apt-get");
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "apt-get:new-dependency");
+        assert_eq!(updates[0].current_version, "not installed");
+        assert_eq!(updates[0].available_version, "2.4.1-alt3");
+    }
+
+    #[test]
+    fn parse_apt_updates_rejects_incomplete_simulation_lines() {
+        let text = "Inst missing-candidate [1.0-alt1]\nInst missing-bracket [1.0-alt1 (2.0-alt1 repo [x86_64])\n";
+
+        assert!(parse_apt_updates(text, "apt-get").is_empty());
+    }
 
     #[test]
     fn parse_choco_updates_reads_limit_output_lines() {

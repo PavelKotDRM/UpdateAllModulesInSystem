@@ -2,8 +2,9 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{UpdaterError, capture_command, heuristic_parse_updates, stream_command};
+use crate::updater::{UpdaterError, capture_command, stream_command};
 use crate::updaters::common::{heuristic_check, stream_checked, stream_checked_refs};
+use crate::updaters::parsers::parse_apt_updates;
 use std::sync::mpsc::Sender;
 
 pub(super) fn apt_installed() -> bool {
@@ -11,7 +12,8 @@ pub(super) fn apt_installed() -> bool {
 }
 
 pub(super) fn apt_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    heuristic_check("apt", &["list", "--upgradable"], "apt")
+    let output = capture_command("apt", &["list".to_owned(), "--upgradable".to_owned()])?;
+    Ok(parse_apt_updates(&output.merged_text(), "apt"))
 }
 
 pub(super) fn detect_apt_get_upgrade_subcommand() -> String {
@@ -43,7 +45,7 @@ pub(super) fn check_apt_get_updates_with_simulation(
     subcommand: &str,
 ) -> Result<Vec<PackageUpdate>, UpdaterError> {
     let output = capture_command("apt-get", &["-s".to_owned(), subcommand.to_owned()])?;
-    Ok(heuristic_parse_updates("apt-get", &output.merged_text()))
+    Ok(parse_apt_updates(&output.merged_text(), "apt-get"))
 }
 
 pub(super) fn apply_apt_get_updates(
@@ -85,7 +87,7 @@ pub(super) fn apt_get_installed() -> bool {
 pub(super) fn apt_get_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     if system::command_available("apt") {
         let output = capture_command("apt", &["list".to_owned(), "--upgradable".to_owned()])?;
-        return Ok(heuristic_parse_updates("apt-get", &output.merged_text()));
+        return Ok(parse_apt_updates(&output.merged_text(), "apt-get"));
     }
 
     let subcommand = detect_apt_get_upgrade_subcommand();

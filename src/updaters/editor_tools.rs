@@ -1,6 +1,7 @@
 //! Обновление расширений VS Code-совместимых редакторов через их CLI.
 
 use crate::model::PackageUpdate;
+use crate::system;
 use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command};
 use crate::updaters::common::stream_checked;
 use reqwest::blocking::Client;
@@ -37,6 +38,7 @@ fn check_editor_extensions(program: &str) -> Result<Vec<PackageUpdate>, UpdaterE
         if let Some(profile) = &profile {
             args.extend(["--profile".to_owned(), profile.clone()]);
         }
+        let args = editor_cli_args(program, args);
 
         let output = capture_command(&command, &args)?;
         ensure_success(&command, &output)?;
@@ -267,7 +269,10 @@ fn exclude_builtin_extension_updates(command: &str, updates: &mut Vec<PackageUpd
     let builtin_ids = extension_ids
         .into_iter()
         .filter(|extension_id| {
-            let args = vec!["--locate-extension".to_owned(), extension_id.clone()];
+            let args = editor_cli_args(
+                command_name(command),
+                vec!["--locate-extension".to_owned(), extension_id.clone()],
+            );
             capture_command(command, &args)
                 .ok()
                 .filter(|output| output.success)
@@ -297,13 +302,14 @@ fn apply_editor_extensions(
             if let Some(profile) = profile {
                 args.extend(["--profile".to_owned(), profile]);
             }
+            let args = editor_cli_args(program, args);
             stream_checked(&command, &args, log_sender)?;
         }
         return Ok(());
     }
 
     for update in selected_updates {
-        let args = extension_install_args(update);
+        let args = editor_cli_args(program, extension_install_args(update));
         stream_checked(&command, &args, log_sender)?;
     }
 
@@ -325,6 +331,34 @@ fn extension_install_args(update: &PackageUpdate) -> Vec<String> {
 fn editor_command(program: &str) -> Result<String, UpdaterError> {
     find_command(program)
         .ok_or_else(|| UpdaterError::Message(format!("{program}: команда редактора не найдена")))
+}
+
+fn command_name(command: &str) -> &str {
+    std::path::Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command)
+}
+
+fn editor_cli_args(program: &str, args: Vec<String>) -> Vec<String> {
+    editor_cli_args_for_root(program, args, system::is_admin())
+}
+
+fn editor_cli_args_for_root(program: &str, args: Vec<String>, is_root: bool) -> Vec<String> {
+    if !cfg!(unix) || !is_root || !matches!(program, "code" | "code-insiders") {
+        return args;
+    }
+
+    let user_data_dir = editor_user_dir(program)
+        .and_then(|path| path.parent().map(ToOwned::to_owned))
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("update-all-modules-{program}")));
+    let mut root_args = vec![
+        "--no-sandbox".to_owned(),
+        "--user-data-dir".to_owned(),
+        user_data_dir.to_string_lossy().into_owned(),
+    ];
+    root_args.extend(args);
+    root_args
 }
 
 fn editor_profiles(program: &str) -> Vec<Option<String>> {
@@ -507,9 +541,9 @@ editor_updater!(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_extension_updates, extension_install_args, is_builtin_extension_location,
-        parse_editor_extensions, parse_marketplace_versions, parse_marketplace_versions_for_platform,
-        parse_profile_names,
+        collect_extension_updates, editor_cli_args_for_root, extension_install_args,
+        is_builtin_extension_location, parse_editor_extensions, parse_marketplace_versions,
+        parse_marketplace_versions_for_platform, parse_profile_names,
     };
     use crate::model::PackageUpdate;
     use serde_json::json;
@@ -524,6 +558,20 @@ mod tests {
         assert_eq!(updates.len(), 2);
         assert_eq!(updates[0].id, "rust-lang.rust-analyzer");
         assert_eq!(updates[0].version, "0.3.2500");
+    }
+
+    #[test]
+    fn adds_required_vscode_arguments_when_running_as_root() {
+        let args = editor_cli_args_for_root("code", vec!["--list-extensions".to_owned()], true);
+
+        if cfg!(unix) {
+            assert_eq!(args[0], "--no-sandbox");
+            assert_eq!(args[1], "--user-data-dir");
+            assert!(!args[2].is_empty());
+            assert_eq!(args[3], "--list-extensions");
+        } else {
+            assert_eq!(args, vec!["--list-extensions"]);
+        }
     }
 
     #[test]
