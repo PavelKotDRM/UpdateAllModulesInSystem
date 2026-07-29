@@ -1,38 +1,26 @@
-use std::process::Command;
+// build.rs
+use anyhow::Result;
+use vergen_gitcl::{Build, Cargo, Emitter, Gitcl, Rustc, Sysinfo};
 
-fn main() {
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/heads/");
+fn main() -> Result<()> {
+    // 1. Инициализируем сборщики информации.
+    // Методы all_* автоматически включают все доступные поля каждого модуля.
+    let build = Build::all_build();
+    let cargo = Cargo::all_cargo();
+    let rustc = Rustc::all_rustc();
+    let sysinfo = Sysinfo::all_sysinfo();
 
-    // Получаем git-описание (опционально)
-    let describe = Command::new("git")
-        .args(&["describe", "--tags", "--dirty", "--always"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        });
+    // Для Git метрик (ветка, SHA коммита, теги)
+    let git = Gitcl::all_git();
 
-    // Получаем текущий git-хэш (опционально)
-    let git_hash = Command::new("git")
-        .args(&["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        });
+    // 2. Передаем инструкции Cargo через Emitter
+    Emitter::default()
+        .add_instructions(&build)?
+        .add_instructions(&cargo)?
+        .add_instructions(&rustc)?
+        .add_instructions(&sysinfo)?
+        .add_instructions(&git)?
+        .emit()?;
 
-    let git_hash_val = git_hash.as_deref().unwrap_or("no-git");
-    let description = describe.as_deref().unwrap_or("unknown");
-
-    println!("cargo:rustc-env=BUILD_GIT_HASH={git_hash_val}");
-    println!("cargo:rustc-env=BUILD_DESCRIPTION={description}");
+    Ok(())
 }

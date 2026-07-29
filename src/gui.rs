@@ -604,6 +604,26 @@ impl GuiApp {
             "Описание сборки: {}",
             crate::build_info::DESCRIPTION
         ));
+
+        egui::CollapsingHeader::new("Подробная информация о сборке")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
+                        for (section, entries) in crate::build_info::DETAILS {
+                            ui.strong(*section);
+                            for (label, value) in *entries {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(format!("{label}:"));
+                                    ui.monospace(*value);
+                                });
+                            }
+                            ui.add_space(6.0);
+                        }
+                    });
+            });
     }
 
     fn render_module_card(
