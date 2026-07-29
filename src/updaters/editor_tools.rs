@@ -4,6 +4,7 @@ use crate::model::PackageUpdate;
 use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command};
 use crate::updaters::common::stream_checked;
 use reqwest::blocking::Client;
+use semver::Version;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -53,7 +54,9 @@ fn check_editor_extensions(program: &str) -> Result<Vec<PackageUpdate>, UpdaterE
         fetch_open_vsx_versions(&installed)?
     };
 
-    Ok(collect_extension_updates(installed, &available_versions))
+    let mut updates = collect_extension_updates(installed, &available_versions);
+    exclude_builtin_extension_updates(&command, &mut updates);
+    Ok(updates)
 }
 
 fn fetch_marketplace_versions(
@@ -238,7 +241,7 @@ fn collect_extension_updates(
         .into_iter()
         .filter_map(|extension| {
             let available = available_versions.get(&extension.id.to_ascii_lowercase())?;
-            (extension.version != *available).then(|| {
+            is_newer_version(available, &extension.version).then(|| {
                 let update = PackageUpdate::new(extension.id, extension.version, available.clone());
                 match extension.profile {
                     Some(profile) => update.with_scope(profile),
@@ -247,6 +250,39 @@ fn collect_extension_updates(
             })
         })
         .collect()
+}
+
+fn is_newer_version(available: &str, installed: &str) -> bool {
+    match (Version::parse(available), Version::parse(installed)) {
+        (Ok(available), Ok(installed)) => available > installed,
+        _ => false,
+    }
+}
+
+fn exclude_builtin_extension_updates(command: &str, updates: &mut Vec<PackageUpdate>) {
+    let extension_ids = updates
+        .iter()
+        .map(|update| update.name.clone())
+        .collect::<HashSet<_>>();
+    let builtin_ids = extension_ids
+        .into_iter()
+        .filter(|extension_id| {
+            let args = vec!["--locate-extension".to_owned(), extension_id.clone()];
+            capture_command(command, &args)
+                .ok()
+                .filter(|output| output.success)
+                .is_some_and(|output| is_builtin_extension_location(&output.stdout))
+        })
+        .collect::<HashSet<_>>();
+
+    updates.retain(|update| !builtin_ids.contains(&update.name));
+}
+
+fn is_builtin_extension_location(location: &str) -> bool {
+    location
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+        .contains("/resources/app/extensions/")
 }
 
 fn apply_editor_extensions(
@@ -471,8 +507,9 @@ editor_updater!(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_extension_updates, extension_install_args, parse_editor_extensions,
-        parse_marketplace_versions, parse_marketplace_versions_for_platform, parse_profile_names,
+        collect_extension_updates, extension_install_args, is_builtin_extension_location,
+        parse_editor_extensions, parse_marketplace_versions, parse_marketplace_versions_for_platform,
+        parse_profile_names,
     };
     use crate::model::PackageUpdate;
     use serde_json::json;
@@ -512,6 +549,29 @@ mod tests {
         assert_eq!(updates[0].name, "docker.docker");
         assert_eq!(updates[0].current_version, "0.17.0");
         assert_eq!(updates[0].available_version, "0.18.0");
+    }
+
+    #[test]
+    fn ignores_marketplace_version_older_than_builtin_extension() {
+        let installed = parse_editor_extensions("github.copilot-chat@0.58.0\n");
+        let available = HashMap::from([("github.copilot-chat".to_owned(), "0.48.1".to_owned())]);
+
+        let updates = collect_extension_updates(installed, &available);
+
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn identifies_builtin_extension_locations() {
+        assert!(is_builtin_extension_location(
+            r"C:\Program Files\Microsoft VS Code\resources\app\extensions\copilot"
+        ));
+        assert!(is_builtin_extension_location(
+            "/usr/share/code/resources/app/extensions/github"
+        ));
+        assert!(!is_builtin_extension_location(
+            r"C:\Users\user\.vscode\extensions\publisher.extension-1.0.0"
+        ));
     }
 
     #[test]
