@@ -1,7 +1,8 @@
 //! Графический интерфейс приложения на базе `egui`/`eframe`.
 
 use crate::app::{
-    ModuleUpdateProgress, SelectionFilter, UpdatePhase, discover_modules, run_updates_with_progress,
+    ModuleUpdateProgress, SelectionFilter, UpdateCancellation, UpdatePhase, discover_modules,
+    run_updates_with_progress_cancellable,
 };
 use crate::model::ModuleSnapshot;
 use crate::repaint::{self, RepaintSender};
@@ -79,6 +80,7 @@ pub struct GuiApp {
     active_tab: GuiTab,
     show_not_found: bool,
     module_progress: BTreeMap<String, ModuleUpdateProgress>,
+    update_cancellation: Option<UpdateCancellation>,
     elevation_pending: bool,
     close_after_elevation: bool,
 }
@@ -113,6 +115,7 @@ impl GuiApp {
             active_tab: GuiTab::Overview,
             show_not_found,
             module_progress: BTreeMap::new(),
+            update_cancellation: None,
             elevation_pending: false,
             close_after_elevation: false,
         };
@@ -145,6 +148,8 @@ impl GuiApp {
         self.module_progress.clear();
         let sender = self.events_tx.clone();
         let force_yes = self.auto_yes;
+        let cancellation = UpdateCancellation::default();
+        self.update_cancellation = Some(cancellation.clone());
         thread::spawn(move || {
             let (log_tx, log_rx) = mpsc::channel::<String>();
             let (progress_tx, progress_rx) = mpsc::channel::<ModuleUpdateProgress>();
@@ -162,9 +167,16 @@ impl GuiApp {
                 }
             });
 
-            let results =
-                run_updates_with_progress(&modules, force_yes, &log_tx, Some(progress_tx));
-            let summary = if results.is_empty() {
+            let results = run_updates_with_progress_cancellable(
+                &modules,
+                force_yes,
+                &log_tx,
+                Some(progress_tx),
+                cancellation.clone(),
+            );
+            let summary = if cancellation.is_cancelled() {
+                String::from("Обновление отменено")
+            } else if results.is_empty() {
                 String::from("Нет выбранных модулей с доступными обновлениями")
             } else if results.iter().all(|(_, result)| result.is_ok()) {
                 String::from("Обновление успешно завершено")
@@ -173,6 +185,22 @@ impl GuiApp {
             };
             let _ = sender.send(GuiEvent::UpdateFinished(summary));
         });
+    }
+
+    fn cancel_update(&mut self) {
+        let Some(cancellation) = &self.update_cancellation else {
+            return;
+        };
+        if cancellation.is_cancelled() {
+            return;
+        }
+
+        cancellation.cancel();
+        self.status_line =
+            String::from("Отмена запрошена: ожидается завершение активных модулей...");
+        self.append_log(String::from(
+            "[system] Отмена запрошена; новые модули запускаться не будут",
+        ));
     }
 
     fn start_update_all(&mut self) {
@@ -384,6 +412,7 @@ impl GuiApp {
                 }
                 GuiEvent::UpdateFinished(message) => {
                     self.busy = false;
+                    self.update_cancellation = None;
                     self.append_log(format!("[summary] {message}"));
                     self.status_line = message;
                     self.started_scan = false;
@@ -441,6 +470,17 @@ impl GuiApp {
                 .clicked()
             {
                 self.start_update_all();
+            }
+
+            let can_cancel = self
+                .update_cancellation
+                .as_ref()
+                .is_some_and(|cancellation| !cancellation.is_cancelled());
+            if ui
+                .add_enabled(can_cancel, egui::Button::new("Отменить обновление"))
+                .clicked()
+            {
+                self.cancel_update();
             }
 
             if !system::is_admin()
@@ -768,6 +808,7 @@ fn phase_color(phase: UpdatePhase) -> egui::Color32 {
         UpdatePhase::Running => egui::Color32::from_rgb(70, 140, 240),
         UpdatePhase::Completed => egui::Color32::from_rgb(40, 160, 80),
         UpdatePhase::Failed => egui::Color32::from_rgb(200, 70, 70),
+        UpdatePhase::Cancelled => egui::Color32::from_rgb(190, 150, 50),
     }
 }
 
@@ -879,18 +920,22 @@ fn export_logs_to_file(logs: &BTreeMap<String, Vec<String>>) -> anyhow::Result<P
 ///
 /// # Errors
 /// Возвращает ошибку, если запуск `eframe` не удался.
-pub fn launch_gui(filter: SelectionFilter, auto_yes: bool) -> anyhow::Result<()> {
+pub fn launch_gui(
+    filter: SelectionFilter,
+    auto_yes: bool,
+    elevation_ready_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
     system::hide_windows_console_if_needed(true);
     let native_options = repaint::stable_native_options();
     eframe::run_native(
         "UpdateAllModules",
         native_options,
         Box::new(move |creation_context| {
-            Ok(Box::new(GuiApp::new(
-                filter,
-                auto_yes,
-                &creation_context.egui_ctx,
-            )))
+            let app = GuiApp::new(filter, auto_yes, &creation_context.egui_ctx);
+            if let Some(path) = &elevation_ready_file {
+                fs::write(path, "ready")?;
+            }
+            Ok(Box::new(app))
         }),
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;

@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     let filter = build_selection_filter(&cli);
 
     if gui_mode {
-        gui::launch_gui(filter, cli.yes)?;
+        gui::launch_gui(filter, cli.yes, cli.elevation_ready_file)?;
         return Ok(());
     }
 

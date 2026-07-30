@@ -126,7 +126,10 @@ fn quote_windows_argument(argument: &str) -> String {
 
 #[cfg(target_os = "linux")]
 fn restart_elevated_impl() -> Result<()> {
-    use std::process::Command;
+    use std::fs;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     if !command_available("pkexec") {
         bail!("не найден pkexec; установите PolicyKit для запуска GUI с правами root");
@@ -134,13 +137,37 @@ fn restart_elevated_impl() -> Result<()> {
 
     let executable =
         std::env::current_exe().context("не удалось определить путь к исполняемому файлу")?;
+    let marker_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("не удалось определить системное время")?
+        .as_nanos();
+    let ready_file = std::env::temp_dir().join(format!(
+        "update_all_modules_elevated_{}_{}",
+        std::process::id(),
+        marker_id
+    ));
+    fs::write(&ready_file, []).context("не удалось создать маркер запуска GUI")?;
+
     let mut command = Command::new("pkexec");
-    command.args([
-        "sh",
-        "-c",
-        "nohup \"$@\" >/dev/null 2>&1 &",
-        "update-all-modules-elevated",
-    ]);
+    command.arg("env");
+    for variable in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_SESSION_TYPE",
+        "GDK_BACKEND",
+        "LANG",
+        "LC_ALL",
+    ] {
+        if let Some(value) = std::env::var_os(variable) {
+            let mut assignment = std::ffi::OsString::from(variable);
+            assignment.push("=");
+            assignment.push(value);
+            command.arg(assignment);
+        }
+    }
     command.arg(executable);
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if arguments.is_empty() {
@@ -148,16 +175,36 @@ fn restart_elevated_impl() -> Result<()> {
     } else {
         command.args(arguments);
     }
+    command.arg("--elevation-ready-file").arg(&ready_file);
     if let Ok(current_dir) = std::env::current_dir() {
         command.current_dir(current_dir);
     }
+    command.stdout(Stdio::null()).stderr(Stdio::null());
 
-    let status = command.status().context("не удалось запустить pkexec")?;
-    if !status.success() {
-        bail!("запуск с правами root отменён или отклонён (код {status})");
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = fs::remove_file(&ready_file);
+            return Err(error).context("не удалось запустить pkexec");
+        }
+    };
+
+    loop {
+        if fs::metadata(&ready_file).is_ok_and(|metadata| metadata.len() > 0) {
+            let _ = fs::remove_file(&ready_file);
+            return Ok(());
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .context("не удалось проверить запуск приложения с правами root")?
+        {
+            let _ = fs::remove_file(&ready_file);
+            bail!("новое окно с правами root не запустилось (код {status})");
+        }
+
+        thread::sleep(Duration::from_millis(100));
     }
-
-    Ok(())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]

@@ -8,6 +8,7 @@ use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Sender},
 };
 use std::thread;
@@ -25,6 +26,8 @@ pub enum UpdatePhase {
     Completed,
     /// Обновление завершено с ошибкой.
     Failed,
+    /// Обновление отменено до запуска модуля.
+    Cancelled,
 }
 
 impl UpdatePhase {
@@ -35,7 +38,26 @@ impl UpdatePhase {
             Self::Running => "Выполняется",
             Self::Completed => "Завершен",
             Self::Failed => "Ошибка",
+            Self::Cancelled => "Отменено",
         }
+    }
+}
+
+/// Потокобезопасный сигнал кооперативной отмены обновления.
+#[derive(Clone, Default)]
+pub struct UpdateCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl UpdateCancellation {
+    /// Запрашивает остановку очереди после завершения уже запущенных модулей.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Возвращает `true`, если пользователь запросил отмену.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
     }
 }
 
@@ -262,6 +284,23 @@ pub fn run_updates_with_progress(
     log_sender: &Sender<String>,
     progress_sender: Option<Sender<ModuleUpdateProgress>>,
 ) -> Vec<(String, Result<(), UpdaterError>)> {
+    run_updates_with_progress_cancellable(
+        modules,
+        force_yes,
+        log_sender,
+        progress_sender,
+        UpdateCancellation::default(),
+    )
+}
+
+/// Запускает обновление с возможностью безопасно остановить очередь заданий.
+pub fn run_updates_with_progress_cancellable(
+    modules: &[ModuleSnapshot],
+    force_yes: bool,
+    log_sender: &Sender<String>,
+    progress_sender: Option<Sender<ModuleUpdateProgress>>,
+    cancellation: UpdateCancellation,
+) -> Vec<(String, Result<(), UpdaterError>)> {
     let mut results = Vec::new();
     let mut handlers = registry()
         .into_iter()
@@ -321,26 +360,41 @@ pub fn run_updates_with_progress(
     let parallel_handle = (!parallel_jobs.is_empty()).then(|| {
         let log_sender = log_sender.clone();
         let progress_sender = progress_sender.clone();
+        let cancellation = cancellation.clone();
         thread::spawn(move || {
-            run_parallel_update_jobs(parallel_jobs, force_yes, log_sender, progress_sender)
+            run_parallel_update_jobs(
+                parallel_jobs,
+                force_yes,
+                log_sender,
+                progress_sender,
+                cancellation,
+            )
         })
     });
 
     let serial_sender = log_sender.clone();
     let serial_progress_sender = progress_sender.clone();
+    let serial_cancellation = cancellation.clone();
     let serial_handle = (!serial_jobs.is_empty()).then(|| {
         thread::spawn(move || {
-            serial_jobs
-                .into_iter()
-                .map(|job| {
-                    run_update_job(
-                        job,
-                        force_yes,
-                        &serial_sender,
-                        serial_progress_sender.clone(),
-                    )
-                })
-                .collect::<Vec<_>>()
+            let mut completed = Vec::new();
+            let mut jobs = serial_jobs.into_iter();
+            while let Some(job) = jobs.next() {
+                if serial_cancellation.is_cancelled() {
+                    cancel_queued_job(job, &serial_sender, &serial_progress_sender);
+                    for queued_job in jobs {
+                        cancel_queued_job(queued_job, &serial_sender, &serial_progress_sender);
+                    }
+                    break;
+                }
+                completed.push(run_update_job(
+                    job,
+                    force_yes,
+                    &serial_sender,
+                    serial_progress_sender.clone(),
+                ));
+            }
+            completed
         })
     });
 
@@ -438,6 +492,7 @@ fn run_parallel_update_jobs(
     force_yes: bool,
     log_sender: Sender<String>,
     progress_sender: Option<Sender<ModuleUpdateProgress>>,
+    cancellation: UpdateCancellation,
 ) -> Vec<(usize, String, Result<(), UpdaterError>)> {
     if jobs.is_empty() {
         return Vec::new();
@@ -453,10 +508,21 @@ fn run_parallel_update_jobs(
         let result_sender = result_tx.clone();
         let worker_log_sender = log_sender.clone();
         let worker_progress_sender = progress_sender.clone();
+        let worker_cancellation = cancellation.clone();
         handles.push(thread::spawn(move || {
             loop {
                 let next_job = {
                     let mut jobs = jobs.lock().expect("update jobs mutex poisoned");
+                    if worker_cancellation.is_cancelled() {
+                        for queued_job in jobs.drain(..) {
+                            cancel_queued_job(
+                                queued_job,
+                                &worker_log_sender,
+                                &worker_progress_sender,
+                            );
+                        }
+                        return;
+                    }
                     jobs.pop()
                 };
 
@@ -482,6 +548,18 @@ fn run_parallel_update_jobs(
     }
     results.sort_by_key(|(index, _, _)| *index);
     results
+}
+
+fn cancel_queued_job(
+    job: UpdateJob,
+    log_sender: &Sender<String>,
+    progress_sender: &Option<Sender<ModuleUpdateProgress>>,
+) {
+    send_progress(progress_sender, &job.module_name, UpdatePhase::Cancelled);
+    let _ = log_sender.send(format_module_log(
+        &job.module_name,
+        "Этап: отменено до запуска",
+    ));
 }
 
 fn send_progress(
@@ -752,6 +830,30 @@ mod tests {
             .map(|progress| progress.phase)
             .collect::<Vec<_>>();
         assert_eq!(phases, vec![UpdatePhase::Running, UpdatePhase::Completed]);
+    }
+
+    #[test]
+    fn cancelled_queued_job_reports_cancelled_progress() {
+        let updater: Box<dyn Updater> = Box::new(FakeUpdater {
+            name: "fake",
+            installed: true,
+            updates: Vec::new(),
+            fail_message: None,
+        });
+        let job = UpdateJob {
+            index: 0,
+            module_name: "fake".to_owned(),
+            updater,
+            selected_updates: Vec::new(),
+        };
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+
+        cancel_queued_job(job, &log_tx, &Some(progress_tx));
+        drop(log_tx);
+
+        assert_eq!(progress_rx.recv().unwrap().phase, UpdatePhase::Cancelled);
+        assert!(log_rx.recv().unwrap().contains("отменено до запуска"));
     }
 
     #[test]

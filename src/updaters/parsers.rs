@@ -15,6 +15,46 @@ pub(super) fn parse_apt_updates(text: &str, manager: &str) -> Vec<PackageUpdate>
         .collect()
 }
 
+pub(super) fn parse_flatpak_updates(text: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let columns = line.split('\t').map(str::trim).collect::<Vec<_>>();
+            let (application, available) = match columns.as_slice() {
+                [application, available, ..] => (*application, *available),
+                _ => {
+                    let mut fields = line.split_whitespace();
+                    (fields.next()?, fields.next()?)
+                }
+            };
+
+            (!application.eq_ignore_ascii_case("application")
+                && !application.is_empty()
+                && !available.is_empty())
+            .then(|| PackageUpdate::new(format!("flatpak:{application}"), "installed", available))
+        })
+        .collect()
+}
+
+pub(super) fn parse_pkcon_updates(text: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.contains("[===="))
+        .filter_map(|line| {
+            let package_id = line
+                .split_whitespace()
+                .find(|field| field.matches(';').count() >= 3)?;
+            let mut fields = package_id.split(';');
+            let name = fields.next()?;
+            let available = fields.next()?;
+
+            (!name.is_empty() && !available.is_empty())
+                .then(|| PackageUpdate::new(format!("pkcon:{name}"), "installed", available))
+        })
+        .collect()
+}
+
 fn parse_apt_update_line(line: &str, manager: &str) -> Option<PackageUpdate> {
     if let Some(rest) = line.strip_prefix("Inst ") {
         return parse_apt_get_install_line(rest, manager);
@@ -282,6 +322,30 @@ mod tests {
         let text = "Inst missing-candidate [1.0-alt1]\nInst missing-bracket [1.0-alt1 (2.0-alt1 repo [x86_64])\nInst missing-parenthesis [1.0-alt1] (2.0-alt1 repo [x86_64]\n";
 
         assert!(parse_apt_updates(text, "apt-get").is_empty());
+    }
+
+    #[test]
+    fn parse_flatpak_updates_reads_tab_separated_columns() {
+        let text = "Application\tVersion\norg.mozilla.firefox\t128.0.3\norg.gimp.GIMP\t3.0.4\n";
+
+        let updates = parse_flatpak_updates(text);
+
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "flatpak:org.mozilla.firefox");
+        assert_eq!(updates[0].current_version, "installed");
+        assert_eq!(updates[0].available_version, "128.0.3");
+    }
+
+    #[test]
+    fn parse_pkcon_updates_ignores_progress_and_reads_package_ids() {
+        let text = "Getting updates [=========================]\nNormal firefox;128.0.3-alt1;x86_64;sisyphus Firefox web browser\nBlocked kernel-image;6.12.40-alt1;x86_64;sisyphus Linux kernel\nFinished [=========================]\n";
+
+        let updates = parse_pkcon_updates(text);
+
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "pkcon:firefox");
+        assert_eq!(updates[0].available_version, "128.0.3-alt1");
+        assert_eq!(updates[1].name, "pkcon:kernel-image");
     }
 
     #[test]

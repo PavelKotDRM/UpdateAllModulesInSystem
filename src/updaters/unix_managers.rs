@@ -4,7 +4,7 @@ use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{UpdaterError, capture_command, stream_command};
 use crate::updaters::common::{heuristic_check, stream_checked, stream_checked_refs};
-use crate::updaters::parsers::parse_apt_updates;
+use crate::updaters::parsers::{parse_apt_updates, parse_flatpak_updates, parse_pkcon_updates};
 use std::sync::mpsc::Sender;
 
 pub(super) fn apt_installed() -> bool {
@@ -57,14 +57,11 @@ pub(super) fn check_apt_get_updates_with_simulation(
 }
 
 pub(super) fn apply_apt_get_updates(
-    force_yes: bool,
+    _force_yes: bool,
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
     let subcommand = detect_apt_get_upgrade_subcommand();
-    let mut args = vec![subcommand.clone()];
-    if force_yes {
-        args.push("-y".to_owned());
-    }
+    let args = vec![subcommand.clone(), "-y".to_owned()];
 
     let _ = log_sender.send(format!("apt-get: выбран режим обновления `{subcommand}`"));
 
@@ -256,15 +253,15 @@ pub(super) fn flatpak_installed() -> bool {
 }
 
 pub(super) fn flatpak_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    heuristic_check(
+    let output = capture_command(
         "flatpak",
         &[
-            "remote-ls",
-            "--updates",
-            "--columns=application,installed-version,version",
+            "remote-ls".to_owned(),
+            "--updates".to_owned(),
+            "--columns=application,version".to_owned(),
         ],
-        "flatpak",
-    )
+    )?;
+    Ok(parse_flatpak_updates(&output.merged_text()))
 }
 
 pub(super) fn flatpak_apply_updates(
@@ -300,7 +297,8 @@ pub(super) fn pkcon_installed() -> bool {
 }
 
 pub(super) fn pkcon_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    heuristic_check("pkcon", &["get-updates"], "pkcon")
+    let output = capture_command("pkcon", &["--plain".to_owned(), "get-updates".to_owned()])?;
+    Ok(parse_pkcon_updates(&output.merged_text()))
 }
 
 pub(super) fn pkcon_apply_updates(
@@ -308,7 +306,7 @@ pub(super) fn pkcon_apply_updates(
     _selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let mut args = vec!["update".to_owned()];
+    let mut args = vec!["--plain".to_owned(), "update".to_owned()];
     if force_yes {
         args.push("-y".to_owned());
     }

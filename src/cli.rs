@@ -1,6 +1,7 @@
 //! Определение CLI-аргументов приложения через `clap`.
 
 use clap::Parser;
+use std::path::PathBuf;
 
 const AFTER_HELP: &str = "РЕЖИМЫ:
     Без аргументов             Запустить графический интерфейс
@@ -44,6 +45,10 @@ pub struct Cli {
     /// Запустить графический интерфейс.
     #[arg(long = "gui", help_heading = "РЕЖИМ ВЫПОЛНЕНИЯ")]
     pub gui: bool,
+
+    /// Служебный файл подтверждения запуска GUI после повышения прав.
+    #[arg(long, hide = true)]
+    pub elevation_ready_file: Option<PathBuf>,
 
     /// Выводить подробные логи в CLI.
     #[arg(short = 'v', long = "verbose", help_heading = "РЕЖИМ ВЫПОЛНЕНИЯ")]
@@ -112,6 +117,27 @@ mod tests {
         assert!(cli.gui);
         assert!(cli.only_tools);
         assert_eq!(cli.only, vec!["pip".to_owned(), "rustup".to_owned()]);
+    }
+
+    #[test]
+    fn parses_elevation_ready_file_without_showing_it_in_help() {
+        let cli = Cli::parse_from([
+            "update_all_modules",
+            "--gui",
+            "--elevation-ready-file",
+            "/tmp/update-all-modules-ready",
+        ]);
+
+        assert_eq!(
+            cli.elevation_ready_file.as_deref(),
+            Some(std::path::Path::new("/tmp/update-all-modules-ready"))
+        );
+        assert!(
+            !Cli::command()
+                .render_long_help()
+                .to_string()
+                .contains("elevation-ready-file")
+        );
     }
 
     #[test]
