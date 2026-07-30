@@ -1,3 +1,8 @@
+//! Параллельное обнаружение зарегистрированных обновляторов.
+//!
+//! Модуль применяет [`SelectionFilter`] до запуска проверок и возвращает
+//! [`ModuleSnapshot`] в порядке реестра независимо от порядка завершения потоков.
+
 use super::worker_count_for;
 use crate::model::{ModuleKind, ModuleSnapshot, ModuleStatus};
 use crate::updater::Updater;

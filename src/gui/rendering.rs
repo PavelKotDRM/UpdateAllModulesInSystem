@@ -1,3 +1,8 @@
+//! Отрисовка карточек модулей и их текущего прогресса.
+//!
+//! Здесь сосредоточены визуальные состояния выбора пакетов, статуса проверки
+//! и фаз обновления; изменение выбора сообщается контроллеру через флаг.
+
 use super::{GuiApp, ModuleSelectionState, module_selection_state};
 use crate::app::{ModuleUpdateProgress, UpdatePhase};
 use crate::model::ModuleSnapshot;

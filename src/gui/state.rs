@@ -1,3 +1,9 @@
+//! Сохранение пользовательских настроек GUI между запусками.
+//!
+//! Состояние хранится в JSON-файле рабочей директории. Чтение выполняется в
+//! режиме best effort: отсутствующий или повреждённый файл даёт настройки по
+//! умолчанию, не блокируя запуск приложения.
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -19,6 +25,7 @@ fn gui_state_path() -> Option<PathBuf> {
         .map(|cwd| cwd.join(GUI_STATE_FILE))
 }
 
+/// Загружает состояние либо возвращает [`GuiState::default`] при любой ошибке.
 pub(super) fn load_gui_state() -> GuiState {
     let Some(path) = gui_state_path() else {
         return GuiState::default();
@@ -31,6 +38,12 @@ pub(super) fn load_gui_state() -> GuiState {
     serde_json::from_str::<GuiState>(&text).unwrap_or_default()
 }
 
+/// Сохраняет выбор модулей, пакетов и параметры интерфейса.
+///
+/// # Errors
+///
+/// Возвращает ошибку, если рабочая директория недоступна, состояние не удалось
+/// сериализовать или записать в файл.
 pub(super) fn save_gui_state(
     selection: &BTreeSet<String>,
     selected_updates: &BTreeMap<String, BTreeSet<String>>,

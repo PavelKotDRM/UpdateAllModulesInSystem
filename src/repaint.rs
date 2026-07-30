@@ -43,6 +43,10 @@ impl<T> Clone for RepaintSender<T> {
 
 impl<T> RepaintSender<T> {
     /// Отправляет событие и будит event loop для отрисовки нового состояния.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает [`SendError`] с исходным событием, если получатель уже удалён.
     pub fn send(&self, event: T) -> Result<(), SendError<T>> {
         self.sender.send(event)?;
         self.context.request_repaint();
