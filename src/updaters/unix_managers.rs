@@ -60,6 +60,9 @@ pub(super) fn apply_apt_get_updates(
     _force_yes: bool,
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
+    let _ = log_sender.send("apt-get: обновление индексов пакетов".to_owned());
+    stream_checked_refs("apt-get", &["update"], log_sender)?;
+
     let subcommand = detect_apt_get_upgrade_subcommand();
     let args = vec![subcommand.clone(), "-y".to_owned()];
 
