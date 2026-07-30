@@ -35,6 +35,8 @@ pub enum GuiEvent {
     ScanFinished(Vec<ModuleSnapshot>),
     /// Завершение процесса обновления с итоговым сообщением.
     UpdateFinished(String),
+    /// Результат попытки перезапуска с повышенными правами.
+    ElevationFinished(Result<(), String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -77,6 +79,8 @@ pub struct GuiApp {
     active_tab: GuiTab,
     show_not_found: bool,
     module_progress: BTreeMap<String, ModuleUpdateProgress>,
+    elevation_pending: bool,
+    close_after_elevation: bool,
 }
 
 impl GuiApp {
@@ -109,6 +113,8 @@ impl GuiApp {
             active_tab: GuiTab::Overview,
             show_not_found,
             module_progress: BTreeMap::new(),
+            elevation_pending: false,
+            close_after_elevation: false,
         };
         app.start_scan();
         app
@@ -182,6 +188,20 @@ impl GuiApp {
         }
         self.persist_state();
         self.start_update();
+    }
+
+    fn start_elevated(&mut self) {
+        if self.elevation_pending {
+            return;
+        }
+
+        self.elevation_pending = true;
+        self.status_line = String::from("Запрос повышенных прав...");
+        let sender = self.events_tx.clone();
+        thread::spawn(move || {
+            let result = system::restart_elevated().map_err(|error| error.to_string());
+            let _ = sender.send(GuiEvent::ElevationFinished(result));
+        });
     }
 
     fn select_only_updates(&mut self) {
@@ -369,6 +389,17 @@ impl GuiApp {
                     self.started_scan = false;
                     self.start_scan();
                 }
+                GuiEvent::ElevationFinished(Ok(())) => {
+                    self.elevation_pending = false;
+                    self.close_after_elevation = true;
+                    self.status_line = String::from("Запущено с повышенными правами");
+                }
+                GuiEvent::ElevationFinished(Err(error)) => {
+                    self.elevation_pending = false;
+                    let message = format!("Не удалось повысить права: {error}");
+                    self.status_line = message.clone();
+                    self.append_log(format!("[system] Ошибка: {message}"));
+                }
             }
         }
     }
@@ -410,6 +441,17 @@ impl GuiApp {
                 .clicked()
             {
                 self.start_update_all();
+            }
+
+            if !system::is_admin()
+                && ui
+                    .add_enabled(
+                        !self.elevation_pending,
+                        egui::Button::new("Запустить с повышенными правами"),
+                    )
+                    .clicked()
+            {
+                self.start_elevated();
             }
 
             ui.add_enabled_ui(!self.busy, |ui| {
@@ -732,6 +774,10 @@ fn phase_color(phase: UpdatePhase) -> egui::Color32 {
 impl App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
         self.process_events();
+
+        if self.close_after_elevation {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         egui::Panel::top("toolbar").show(ui, |ui| {
             self.show_toolbar(ui);
