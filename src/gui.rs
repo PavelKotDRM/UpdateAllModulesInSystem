@@ -1,29 +1,23 @@
 //! Графический интерфейс приложения на базе `egui`/`eframe`.
 
+mod logs;
+mod rendering;
+mod state;
+
 use crate::app::{
-    ModuleUpdateProgress, SelectionFilter, UpdateCancellation, UpdatePhase, discover_modules,
+    ModuleUpdateProgress, SelectionFilter, UpdateCancellation, discover_modules,
     run_updates_with_progress_cancellable,
 };
 use crate::model::ModuleSnapshot;
 use crate::repaint::{self, RepaintSender};
 use crate::system;
 use eframe::{App, Frame, egui};
-use serde::{Deserialize, Serialize};
+use state::{load_gui_state, save_gui_state};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-
-const GUI_STATE_FILE: &str = ".update_all_modules_gui_state.json";
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct GuiState {
-    selected_modules: Vec<String>,
-    auto_yes: Option<bool>,
-    show_not_found: Option<bool>,
-    selected_updates: BTreeMap<String, Vec<String>>,
-}
 
 #[derive(Debug)]
 /// События, которыми фоновые задачи уведомляют GUI.
@@ -386,15 +380,6 @@ impl GuiApp {
         }
     }
 
-    fn append_log(&mut self, message: String) {
-        let (module, text) = split_module_log(&message);
-        self.logs.entry(module).or_default().push(text);
-    }
-
-    fn log_count(&self) -> usize {
-        self.logs.values().map(Vec::len).sum()
-    }
-
     fn process_events(&mut self) {
         while let Ok(event) = self.events_rx.try_recv() {
             match event {
@@ -433,21 +418,6 @@ impl GuiApp {
         }
     }
 
-    fn export_logs(&mut self) {
-        match export_logs_to_file(&self.logs) {
-            Ok(path) => {
-                let message = format!("Логи экспортированы: {}", path.display());
-                self.status_line = message.clone();
-                self.append_log(format!("[system] {message}"));
-            }
-            Err(error) => {
-                let message = format!("Не удалось экспортировать логи: {error}");
-                self.status_line = message.clone();
-                self.append_log(format!("[system] Ошибка: {message}"));
-            }
-        }
-    }
-
     fn show_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -476,22 +446,17 @@ impl GuiApp {
                 .update_cancellation
                 .as_ref()
                 .is_some_and(|cancellation| !cancellation.is_cancelled());
-            if ui
-                .add_enabled(can_cancel, egui::Button::new("Отменить обновление"))
-                .clicked()
-            {
+            if can_cancel && ui.button("Отменить").clicked() {
                 self.cancel_update();
             }
 
-            if !system::is_admin()
-                && ui
-                    .add_enabled(
-                        !self.elevation_pending,
-                        egui::Button::new("Запустить с повышенными правами"),
-                    )
-                    .clicked()
-            {
-                self.start_elevated();
+            if !system::is_admin() {
+                let elevate_response = ui
+                    .add_enabled(!self.elevation_pending, egui::Button::new("Повысить права"))
+                    .on_hover_text("Перезапустить приложение с правами администратора");
+                if elevate_response.clicked() {
+                    self.start_elevated();
+                }
             }
 
             ui.add_enabled_ui(!self.busy, |ui| {
@@ -693,122 +658,12 @@ impl GuiApp {
             });
     }
 
-    fn render_module_card(
-        ui: &mut egui::Ui,
-        module: &mut ModuleSnapshot,
-        progress: Option<&ModuleUpdateProgress>,
-        selection_changed: &mut bool,
-    ) {
-        let module_id = module.name.clone();
-        ui.push_id(module_id, |ui| {
-            ui.group(|ui| {
-                ui.set_min_width(320.0);
-                ui.horizontal_wrapped(|ui| {
-                    let response = if module.updates.is_empty() {
-                        ui.checkbox(&mut module.selected, "")
-                    } else {
-                        let selected_count = module
-                            .updates
-                            .iter()
-                            .filter(|update| update.selected)
-                            .count();
-                        let state = module_selection_state(selected_count, module.updates.len());
-                        let mut select_all = state == ModuleSelectionState::All;
-                        let response = ui.add(
-                            egui::Checkbox::new(&mut select_all, "")
-                                .indeterminate(state == ModuleSelectionState::Partial),
-                        );
-
-                        if response.changed() {
-                            module.selected = select_all;
-                            for update in &mut module.updates {
-                                update.selected = select_all;
-                            }
-                        }
-
-                        response
-                    };
-                    if response.changed() {
-                        *selection_changed = true;
-                    }
-                    ui.heading(format!("{} ({:?})", module.name, module.kind));
-                });
-
-                ui.label(module.status_label());
-
-                if let Some(progress) = progress {
-                    ui.colored_label(
-                        phase_color(progress.phase),
-                        format!("Статус обновления: {}", progress.phase.label()),
-                    );
-                    if let Some(detail) = &progress.detail {
-                        let detail = detail
-                            .strip_prefix("[stdout] ")
-                            .or_else(|| detail.strip_prefix("[stderr] "))
-                            .unwrap_or(detail);
-                        let mut visible = detail.chars().take(140).collect::<String>();
-                        if detail.chars().count() > 140 {
-                            visible.push_str("...");
-                        }
-                        ui.small(visible);
-                    }
-                }
-
-                if !module.updates.is_empty() {
-                    let selected_updates_count = module
-                        .updates
-                        .iter()
-                        .filter(|update| update.selected)
-                        .count();
-                    let detail_lines = module.detail_lines();
-                    ui.small(format!(
-                        "Выбрано приложений: {}/{}",
-                        selected_updates_count,
-                        module.updates.len()
-                    ));
-
-                    egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            let mut update_selection_changed = false;
-                            for (update, detail_line) in module.updates.iter_mut().zip(detail_lines)
-                            {
-                                ui.horizontal_wrapped(|ui| {
-                                    let response = ui.checkbox(&mut update.selected, "");
-                                    if response.changed() {
-                                        update_selection_changed = true;
-                                    }
-                                    ui.label(detail_line);
-                                });
-                            }
-
-                            if update_selection_changed {
-                                module.selected =
-                                    module.updates.iter().any(|update| update.selected);
-                                *selection_changed = true;
-                            }
-                        });
-                }
-            });
-        });
-    }
-
     fn elevation_warning_text(&self) -> Option<&'static str> {
         if system::should_warn_about_elevation() {
             Some("Запуск без прав администратора: системные менеджеры могут быть недоступны")
         } else {
             None
         }
-    }
-}
-
-fn phase_color(phase: UpdatePhase) -> egui::Color32 {
-    match phase {
-        UpdatePhase::Queued => egui::Color32::from_rgb(210, 170, 40),
-        UpdatePhase::Running => egui::Color32::from_rgb(70, 140, 240),
-        UpdatePhase::Completed => egui::Color32::from_rgb(40, 160, 80),
-        UpdatePhase::Failed => egui::Color32::from_rgb(200, 70, 70),
-        UpdatePhase::Cancelled => egui::Color32::from_rgb(190, 150, 50),
     }
 }
 
@@ -831,89 +686,6 @@ impl App for GuiApp {
             GuiTab::Settings => self.show_settings_tab(ui),
         });
     }
-}
-
-fn gui_state_path() -> Option<PathBuf> {
-    std::env::current_dir()
-        .ok()
-        .map(|cwd| cwd.join(GUI_STATE_FILE))
-}
-
-fn load_gui_state() -> GuiState {
-    let Some(path) = gui_state_path() else {
-        return GuiState::default();
-    };
-
-    let Ok(text) = fs::read_to_string(path) else {
-        return GuiState::default();
-    };
-
-    serde_json::from_str::<GuiState>(&text).unwrap_or_default()
-}
-
-fn save_gui_state(
-    selection: &BTreeSet<String>,
-    selected_updates: &BTreeMap<String, BTreeSet<String>>,
-    auto_yes: bool,
-    show_not_found: bool,
-) -> anyhow::Result<()> {
-    let path = gui_state_path()
-        .ok_or_else(|| anyhow::anyhow!("не удалось определить рабочую директорию"))?;
-    let state = GuiState {
-        selected_modules: selection.iter().cloned().collect(),
-        auto_yes: Some(auto_yes),
-        show_not_found: Some(show_not_found),
-        selected_updates: selected_updates
-            .iter()
-            .map(|(module, updates)| (module.clone(), updates.iter().cloned().collect()))
-            .collect(),
-    };
-    let text = serde_json::to_string_pretty(&state)?;
-    fs::write(path, text)?;
-    Ok(())
-}
-
-fn split_module_log(message: &str) -> (String, String) {
-    if let Some(rest) = message.strip_prefix('[')
-        && let Some((module, text)) = rest.split_once("] ")
-        && !module.is_empty()
-    {
-        return (module.to_owned(), text.to_owned());
-    }
-
-    ("system".to_owned(), message.to_owned())
-}
-
-fn export_logs_to_file(logs: &BTreeMap<String, Vec<String>>) -> anyhow::Result<PathBuf> {
-    let cwd = std::env::current_dir()
-        .map_err(|error| anyhow::anyhow!("не удалось определить рабочую директорию: {error}"))?;
-
-    let logs_dir = cwd.join("logs");
-    fs::create_dir_all(&logs_dir)?;
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| anyhow::anyhow!("ошибка времени системы: {error}"))?
-        .as_secs();
-
-    let path = logs_dir.join(format!("update_all_modules_logs_{now}.txt"));
-    let content = if logs.is_empty() {
-        "Логи отсутствуют\n".to_owned()
-    } else {
-        let mut text = String::new();
-        for (module, lines) in logs {
-            text.push_str(&format!("[{module}]\n"));
-            for line in lines {
-                text.push_str(line);
-                text.push('\n');
-            }
-            text.push('\n');
-        }
-        text
-    };
-
-    fs::write(&path, content)?;
-    Ok(path)
 }
 
 /// Запускает нативное GUI-приложение.
@@ -956,11 +728,11 @@ mod tests {
     #[test]
     fn split_module_log_extracts_module_and_uses_system_fallback() {
         assert_eq!(
-            split_module_log("[npm] [stdout] updated 2 packages"),
+            logs::split_module_log("[npm] [stdout] updated 2 packages"),
             ("npm".to_owned(), "[stdout] updated 2 packages".to_owned())
         );
         assert_eq!(
-            split_module_log("Обновление завершено"),
+            logs::split_module_log("Обновление завершено"),
             ("system".to_owned(), "Обновление завершено".to_owned())
         );
     }
