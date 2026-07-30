@@ -3,6 +3,7 @@
 use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command, stream_command};
+use crate::updaters::common::{ensure_success, stream_checked};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs::{self, File};
@@ -242,9 +243,7 @@ fn detect_node_install_method() -> NodeInstallMethod {
 }
 
 fn winget_node_package() -> Option<&'static str> {
-    if find_command("winget").is_none() {
-        return None;
-    }
+    find_command("winget")?;
     ["OpenJS.NodeJS", "OpenJS.NodeJS.LTS"]
         .into_iter()
         .find(|package_id| {
@@ -416,27 +415,6 @@ fn check_cli_version(
         .then(|| PackageUpdate::new(program, current, latest).with_scope(SELF_UPDATE_SCOPE))
         .into_iter()
         .collect())
-}
-
-fn stream_checked(
-    program: &str,
-    args: &[String],
-    log_sender: &Sender<String>,
-) -> Result<(), UpdaterError> {
-    let output = stream_command(program, args, log_sender)?;
-    ensure_success(program, &output)
-}
-
-fn ensure_success(program: &str, output: &CommandOutput) -> Result<(), UpdaterError> {
-    if output.success {
-        return Ok(());
-    }
-
-    Err(UpdaterError::CommandFailed {
-        program: program.to_owned(),
-        code: output.exit_code,
-        stderr: output.merged_text().trim().to_owned(),
-    })
 }
 
 fn parse_outdated_packages(

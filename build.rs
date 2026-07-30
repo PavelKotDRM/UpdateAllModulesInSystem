@@ -1,4 +1,5 @@
-// build.rs
+//! Формирует метаданные сборки, Git, компилятора и системы для `build_info`.
+
 use anyhow::Result;
 use vergen_gitcl::{Build, Cargo, Emitter, Gitcl, Rustc, Sysinfo};
 

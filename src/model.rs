@@ -1,15 +1,18 @@
 //! Типы доменной модели для описания модулей, статусов и доступных обновлений.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Категория модуля, определяющая источник обновлений.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleKind {
+    /// Системный менеджер пакетов.
     System,
+    /// Инструмент или среда разработки.
     Tool,
+    /// Менеджер Python-пакетов.
     Python,
 }
 
-#[derive(Debug, Clone)]
 /// Описание одного доступного обновления пакета.
+#[derive(Debug, Clone)]
 pub struct PackageUpdate {
     /// Логическое имя пакета в формате, зависящем от менеджера.
     pub name: String,
@@ -24,24 +27,7 @@ pub struct PackageUpdate {
 }
 
 impl PackageUpdate {
-    /// Создает новую запись об обновлении пакета.
-    ///
-    /// # Arguments
-    /// * `name` - Имя пакета.
-    /// * `current_version` - Текущая версия.
-    /// * `available_version` - Доступная версия.
-    ///
-    /// # Returns
-    /// Возвращает [`PackageUpdate`] с включенным флагом выбора (`selected = true`).
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let update = PackageUpdate::new("pip:requests", "2.31.0", "2.32.0");
-    /// assert!(update.selected);
-    /// ```
+    /// Создаёт выбранное по умолчанию обновление без области установки.
     pub fn new(
         name: impl Into<String>,
         current_version: impl Into<String>,
@@ -79,8 +65,8 @@ impl PackageUpdate {
     }
 }
 
-#[derive(Debug, Clone)]
 /// Состояние модуля после проверки обновлений.
+#[derive(Debug, Clone)]
 pub enum ModuleStatus {
     /// Менеджер или инструмент не обнаружен в системе.
     NotFound,
@@ -93,22 +79,7 @@ pub enum ModuleStatus {
 }
 
 impl ModuleStatus {
-    /// Возвращает человекочитаемую метку состояния.
-    ///
-    /// # Arguments
-    /// Функция не принимает аргументов.
-    ///
-    /// # Returns
-    /// Локализованная строка для отображения в CLI/GUI.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let label = ModuleStatus::UpToDate.label();
-    /// assert_eq!(label, "Актуален");
-    /// ```
+    /// Возвращает локализованную метку для CLI и GUI.
     pub fn label(&self) -> String {
         match self {
             Self::NotFound => "Не найден в системе".to_owned(),
@@ -118,29 +89,14 @@ impl ModuleStatus {
         }
     }
 
-    /// Проверяет, указывает ли состояние на наличие обновлений.
-    ///
-    /// # Arguments
-    /// Функция не принимает аргументов.
-    ///
-    /// # Returns
-    /// `true`, если состояние равно [`ModuleStatus::UpdatesAvailable`], иначе `false`.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// assert!(ModuleStatus::UpdatesAvailable(1).has_updates());
-    /// assert!(!ModuleStatus::UpToDate.has_updates());
-    /// ```
+    /// Проверяет, содержит ли состояние доступные обновления.
     pub fn has_updates(&self) -> bool {
         matches!(self, Self::UpdatesAvailable(_))
     }
 }
 
-#[derive(Debug, Clone)]
 /// Снимок состояния одного обновляемого модуля.
+#[derive(Debug, Clone)]
 pub struct ModuleSnapshot {
     /// Уникальное имя модуля.
     pub name: String,
@@ -159,24 +115,7 @@ pub struct ModuleSnapshot {
 }
 
 impl ModuleSnapshot {
-    /// Создает новый снимок модуля с базовыми значениями.
-    ///
-    /// # Arguments
-    /// * `name` - Имя модуля.
-    /// * `kind` - Категория модуля.
-    /// * `requires_elevation` - Требуется ли запуск с повышенными правами.
-    ///
-    /// # Returns
-    /// Новый [`ModuleSnapshot`] со статусом [`ModuleStatus::NotFound`].
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let snapshot = ModuleSnapshot::new("pip", ModuleKind::Python, false);
-    /// assert_eq!(snapshot.name, "pip");
-    /// ```
+    /// Создаёт выбранный снимок со статусом [`ModuleStatus::NotFound`].
     pub fn new(name: impl Into<String>, kind: ModuleKind, requires_elevation: bool) -> Self {
         Self {
             name: name.into(),
@@ -189,52 +128,21 @@ impl ModuleSnapshot {
         }
     }
 
-    /// Возвращает текстовую метку текущего статуса модуля.
-    ///
-    /// # Arguments
-    /// Функция не принимает аргументов.
-    ///
-    /// # Returns
-    /// Строка, пригодная для отображения пользователю.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let snapshot = ModuleSnapshot::new("pip", ModuleKind::Python, false);
-    /// let _label = snapshot.status_label();
-    /// ```
+    /// Возвращает пользовательскую метку статуса с особыми инструкциями для
+    /// Центра обновления Windows.
     pub fn status_label(&self) -> String {
-        if self.name == "windows-update" {
-            if let ModuleStatus::UpdatesAvailable(count) = self.status {
-                return format!(
-                    "Доступны обновления ({count}). Установите их через Центр обновления Windows"
-                );
-            }
+        if self.name == "windows-update"
+            && let ModuleStatus::UpdatesAvailable(count) = self.status
+        {
+            return format!(
+                "Доступны обновления ({count}). Установите их через Центр обновления Windows"
+            );
         }
 
         self.status.label()
     }
 
-    /// Формирует подробные строки по каждому найденному обновлению.
-    ///
-    /// # Arguments
-    /// Функция не принимает аргументов.
-    ///
-    /// # Returns
-    /// Список строк формата `name: current -> available`.
-    /// Если обновлений нет, возвращается строка-заглушка.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let snapshot = ModuleSnapshot::new("pip", ModuleKind::Python, false);
-    /// let lines = snapshot.detail_lines();
-    /// assert!(!lines.is_empty());
-    /// ```
+    /// Формирует строки `name: current -> available` либо одну строку-заглушку.
     pub fn detail_lines(&self) -> Vec<String> {
         if self.updates.is_empty() {
             return vec!["Список конкретных обновлений пуст".to_owned()];

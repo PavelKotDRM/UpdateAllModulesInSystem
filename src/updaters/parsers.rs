@@ -4,6 +4,10 @@ use crate::model::PackageUpdate;
 use crate::updater::UpdaterError;
 use serde::Deserialize;
 
+/// Разбирает как `apt list --upgradable`, так и симуляцию APT-RPM.
+///
+/// Для строк `Inst name [current] (candidate repository)` версии извлекаются
+/// по структурным скобкам, поэтому RPM epoch и суффиксы ALT сохраняются целиком.
 pub(super) fn parse_apt_updates(text: &str, manager: &str) -> Vec<PackageUpdate> {
     text.lines()
         .map(str::trim)
@@ -29,7 +33,8 @@ fn parse_apt_get_install_line(rest: &str, manager: &str) -> Option<PackageUpdate
         ("not installed", version_info)
     };
     let candidate_info = candidate_info.strip_prefix('(')?;
-    let available = candidate_info.split_whitespace().next()?;
+    let (candidate, _) = candidate_info.split_once(')')?;
+    let available = candidate.split_whitespace().next()?;
 
     (!name.is_empty() && !current.is_empty() && !available.is_empty())
         .then(|| PackageUpdate::new(format!("{manager}:{name}"), current, available))
@@ -42,16 +47,20 @@ fn parse_apt_list_update_line(line: &str, manager: &str) -> Option<PackageUpdate
     let architecture = fields.next()?;
     let details = fields.collect::<Vec<_>>().join(" ");
     let old_version_info = details.strip_prefix('[')?.strip_suffix(']')?;
-    let current = old_version_info.split_whitespace().last()?.trim_start_matches(|ch| ch == ':' || ch == '=');
+    let current = old_version_info
+        .split_whitespace()
+        .last()?
+        .trim_start_matches([':', '=']);
     let name = package.split_once('/').map_or(package, |(name, _)| name);
 
     (package.contains('/')
         && !available.is_empty()
         && !architecture.is_empty()
         && !current.is_empty())
-        .then(|| PackageUpdate::new(format!("{manager}:{name}"), current, available))
+    .then(|| PackageUpdate::new(format!("{manager}:{name}"), current, available))
 }
 
+/// Разбирает один объект или массив объектов Windows Update с полем `title`.
 pub(super) fn parse_windows_update_items(text: &str) -> Result<Vec<PackageUpdate>, UpdaterError> {
     #[derive(Debug, Deserialize)]
     struct WindowsUpdateItem {
@@ -85,6 +94,7 @@ pub(super) fn parse_windows_update_items(text: &str) -> Result<Vec<PackageUpdate
         .collect())
 }
 
+/// Разбирает таблицу `winget upgrade` по позициям локализованных заголовков.
 pub(super) fn parse_winget_updates(text: &str) -> Vec<PackageUpdate> {
     let mut lines = text.lines();
     let Some(header) = lines.find(|line| winget_column_positions(line).is_some()) else {
@@ -177,6 +187,7 @@ fn slice_chars(text: &str, start: usize, end: usize) -> &str {
     &text[start_byte..end_byte]
 }
 
+/// Разбирает машинный формат Chocolatey `name|current|available|...`.
 pub(super) fn parse_choco_updates(text: &str) -> Vec<PackageUpdate> {
     text.lines()
         .map(str::trim)
@@ -204,6 +215,7 @@ pub(super) fn parse_choco_updates(text: &str) -> Vec<PackageUpdate> {
         .collect()
 }
 
+/// Разбирает вывод MSYS2/pacman вида `name current -> available`.
 pub(super) fn parse_msys2_updates(text: &str) -> Vec<PackageUpdate> {
     text.lines()
         .filter_map(|line| {
@@ -267,7 +279,7 @@ mod tests {
 
     #[test]
     fn parse_apt_updates_rejects_incomplete_simulation_lines() {
-        let text = "Inst missing-candidate [1.0-alt1]\nInst missing-bracket [1.0-alt1 (2.0-alt1 repo [x86_64])\n";
+        let text = "Inst missing-candidate [1.0-alt1]\nInst missing-bracket [1.0-alt1 (2.0-alt1 repo [x86_64])\nInst missing-parenthesis [1.0-alt1] (2.0-alt1 repo [x86_64]\n";
 
         assert!(parse_apt_updates(text, "apt-get").is_empty());
     }

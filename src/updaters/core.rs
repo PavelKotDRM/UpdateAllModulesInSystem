@@ -8,8 +8,12 @@ use std::sync::mpsc::Sender;
 pub type CheckFn = fn() -> Result<Vec<PackageUpdate>, UpdaterError>;
 /// Тип функции проверки наличия менеджера пакетов в системе.
 pub type InstalledFn = fn() -> bool;
-/// Тип функции применения обновлений.
-pub type ApplyFn = fn(bool, &[PackageUpdate], &Sender<String>) -> Result<(), UpdaterError>;
+/// Тип функции применения выбранных обновлений с потоковой передачей лога.
+pub type ApplyFn = fn(
+    force_yes: bool,
+    selected_updates: &[PackageUpdate],
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError>;
 
 /// Дескриптор зарегистрированного обновлятора.
 pub struct UpdaterDescriptor {
@@ -28,8 +32,8 @@ struct FunctionUpdater {
     apply: ApplyFn,
 }
 
-#[derive(Clone, Copy)]
 /// Спецификация обновлятора в виде набора функциональных указателей.
+#[derive(Clone, Copy)]
 pub struct UpdaterSpec {
     /// Имя обновлятора.
     pub name: &'static str,
@@ -69,22 +73,7 @@ impl Updater for FunctionUpdater {
 }
 
 impl UpdaterSpec {
-    /// Преобразует спецификацию в готовый дескриптор с динамическим обновлятором.
-    ///
-    /// # Arguments
-    /// * `self` - Спецификация обновлятора.
-    ///
-    /// # Returns
-    /// Новый [`UpdaterDescriptor`], который можно добавить в реестр.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let descriptor = spec.into_descriptor();
-    /// assert!(descriptor.updater.name().len() > 0);
-    /// ```
+    /// Преобразует статическую спецификацию в дескриптор с [`Updater`].
     pub fn into_descriptor(self) -> UpdaterDescriptor {
         UpdaterDescriptor {
             updater: Box::new(FunctionUpdater {

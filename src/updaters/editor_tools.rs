@@ -2,8 +2,8 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command};
-use crate::updaters::common::stream_checked;
+use crate::updater::{UpdaterError, capture_command, find_command};
+use crate::updaters::common::{ensure_success, stream_checked};
 use reqwest::blocking::Client;
 use semver::Version;
 use serde_json::{Value, json};
@@ -399,9 +399,9 @@ fn editor_user_dir(program: &str) -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        return std::env::var_os("APPDATA")
+        std::env::var_os("APPDATA")
             .map(PathBuf::from)
-            .map(|path| path.join(product_dir).join("User"));
+            .map(|path| path.join(product_dir).join("User"))
     }
 
     #[cfg(target_os = "macos")]
@@ -448,18 +448,6 @@ fn parse_profile_names(text: &str, existing_ids: &HashSet<String>) -> Vec<String
             existing_ids.contains(id).then(|| name.to_owned())
         })
         .collect()
-}
-
-fn ensure_success(program: &str, output: &CommandOutput) -> Result<(), UpdaterError> {
-    if output.success {
-        return Ok(());
-    }
-
-    Err(UpdaterError::CommandFailed {
-        program: program.to_owned(),
-        code: output.exit_code,
-        stderr: output.merged_text().trim().to_owned(),
-    })
 }
 
 fn parse_editor_extensions(text: &str) -> Vec<InstalledExtension> {

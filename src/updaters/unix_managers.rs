@@ -8,7 +8,15 @@ use crate::updaters::parsers::parse_apt_updates;
 use std::sync::mpsc::Sender;
 
 pub(super) fn apt_installed() -> bool {
-    cfg!(target_os = "linux") && system::command_available("apt")
+    cfg!(target_os = "linux")
+        && should_enable_apt(
+            system::command_available("apt"),
+            system::command_available("apt-get"),
+        )
+}
+
+fn should_enable_apt(has_apt: bool, has_apt_get: bool) -> bool {
+    has_apt && !has_apt_get
 }
 
 pub(super) fn apt_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
@@ -21,10 +29,10 @@ pub(super) fn detect_apt_get_upgrade_subcommand() -> String {
 
     for candidate in candidates {
         let args = vec!["-s".to_owned(), candidate.to_owned()];
-        if let Ok(output) = capture_command("apt-get", &args) {
-            if output.success {
-                return candidate.to_owned();
-            }
+        if let Ok(output) = capture_command("apt-get", &args)
+            && output.success
+        {
+            return candidate.to_owned();
         }
     }
 
@@ -77,7 +85,11 @@ pub(super) fn apt_apply_updates(
     _selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    apply_apt_get_updates(force_yes, log_sender)
+    let mut args = vec!["upgrade".to_owned()];
+    if force_yes {
+        args.push("-y".to_owned());
+    }
+    stream_checked("apt", &args, log_sender)
 }
 
 pub(super) fn apt_get_installed() -> bool {
@@ -85,11 +97,6 @@ pub(super) fn apt_get_installed() -> bool {
 }
 
 pub(super) fn apt_get_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    if system::command_available("apt") {
-        let output = capture_command("apt", &["list".to_owned(), "--upgradable".to_owned()])?;
-        return Ok(parse_apt_updates(&output.merged_text(), "apt-get"));
-    }
-
     let subcommand = detect_apt_get_upgrade_subcommand();
     check_apt_get_updates_with_simulation(&subcommand)
 }
@@ -322,4 +329,17 @@ pub(super) fn brew_apply_updates(
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
     stream_checked_refs("brew", &["upgrade"], log_sender)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_enable_apt;
+
+    #[test]
+    fn apt_is_only_enabled_as_fallback_for_apt_get() {
+        assert!(should_enable_apt(true, false));
+        assert!(!should_enable_apt(true, true));
+        assert!(!should_enable_apt(false, true));
+        assert!(!should_enable_apt(false, false));
+    }
 }

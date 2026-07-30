@@ -80,23 +80,8 @@ pub struct GuiApp {
 }
 
 impl GuiApp {
-    /// Создает GUI-приложение и запускает первичное сканирование модулей.
-    ///
-    /// # Arguments
-    /// * `filter` - Фильтр отбора модулей.
-    /// * `auto_yes` - Значение авто-подтверждения по умолчанию.
-    ///
-    /// # Returns
-    /// Инициализированный экземпляр [`GuiApp`].
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let app = GuiApp::new(SelectionFilter::default(), false);
-    /// let _ = app;
-    /// ```
+    /// Создаёт GUI-приложение, восстанавливает сохранённое состояние и запускает
+    /// первичное сканирование модулей.
     pub fn new(filter: SelectionFilter, auto_yes: bool, context: &egui::Context) -> Self {
         let (events_tx, events_rx) = repaint::channel(context);
         let persisted_state = load_gui_state();
@@ -802,12 +787,11 @@ fn save_gui_state(
 }
 
 fn split_module_log(message: &str) -> (String, String) {
-    if let Some(rest) = message.strip_prefix('[') {
-        if let Some((module, text)) = rest.split_once("] ") {
-            if !module.is_empty() {
-                return (module.to_owned(), text.to_owned());
-            }
-        }
+    if let Some(rest) = message.strip_prefix('[')
+        && let Some((module, text)) = rest.split_once("] ")
+        && !module.is_empty()
+    {
+        return (module.to_owned(), text.to_owned());
     }
 
     ("system".to_owned(), message.to_owned())
@@ -847,24 +831,8 @@ fn export_logs_to_file(logs: &BTreeMap<String, Vec<String>>) -> anyhow::Result<P
 
 /// Запускает нативное GUI-приложение.
 ///
-/// # Arguments
-/// * `filter` - Фильтр отбора модулей для сканирования.
-/// * `auto_yes` - Флаг авто-подтверждения команд обновления.
-///
-/// # Returns
-/// `Ok(())`, если окно успешно отработало и завершилось штатно.
-///
 /// # Errors
 /// Возвращает ошибку, если запуск `eframe` не удался.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// launch_gui(SelectionFilter::default(), false)?;
-/// # Ok::<(), anyhow::Error>(())
-/// ```
 pub fn launch_gui(filter: SelectionFilter, auto_yes: bool) -> anyhow::Result<()> {
     system::hide_windows_console_if_needed(true);
     let native_options = repaint::stable_native_options();

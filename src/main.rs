@@ -15,25 +15,11 @@ use clap::Parser;
 use cli::Cli;
 use std::collections::BTreeSet;
 
-/// Запускает приложение в CLI или GUI режиме в зависимости от аргументов.
-///
-/// # Arguments
-/// Функция не принимает аргументов.
-///
-/// # Returns
-/// `Ok(())` при корректном выполнении сценария запуска.
+/// Запускает CLI или GUI в зависимости от аргументов командной строки.
 ///
 /// # Errors
-/// Возвращает ошибку запуска GUI или аварии потока обновлений в CLI.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// main()?;
-/// # Ok::<(), anyhow::Error>(())
-/// ```
+/// Возвращает ошибку запуска GUI либо аварийного завершения управляющего
+/// потока обновлений в CLI.
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let raw_args: Vec<String> = std::env::args().collect();
@@ -51,22 +37,7 @@ fn main() -> Result<()> {
     run_cli(cli, filter)
 }
 
-/// Строит фильтр выбора модулей на основе параметров CLI.
-///
-/// # Arguments
-/// * `cli` - Распарсенные аргументы командной строки.
-///
-/// # Returns
-/// Инициализированный [`app::SelectionFilter`].
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let filter = build_selection_filter(&cli);
-/// println!("{}", filter.only.len());
-/// ```
+/// Преобразует параметры CLI в фильтр реестра обновляторов.
 fn build_selection_filter(cli: &Cli) -> app::SelectionFilter {
     app::SelectionFilter {
         skip_system: cli.skip_system,
@@ -77,26 +48,10 @@ fn build_selection_filter(cli: &Cli) -> app::SelectionFilter {
     }
 }
 
-/// Выполняет CLI-сценарий: сканирование, вывод таблицы и запуск обновлений.
-///
-/// # Arguments
-/// * `cli` - Параметры запуска CLI.
-/// * `filter` - Фильтр модулей.
-///
-/// # Returns
-/// `Ok(())`, если сценарий завершился штатно.
+/// Сканирует модули, печатает таблицу и при необходимости запускает обновления.
 ///
 /// # Errors
-/// Возвращает ошибку при панике потока обновления.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// run_cli(cli, filter)?;
-/// # Ok::<(), anyhow::Error>(())
-/// ```
+/// Возвращает ошибку, если управляющий поток обновлений завершился паникой.
 fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<()> {
     let modules = app::discover_modules(&filter);
 

@@ -19,23 +19,14 @@ pub trait Updater: Send + Sync {
     fn is_installed(&self) -> bool;
     /// Собирает список доступных обновлений.
     ///
-    /// # Returns
-    /// Список пакетов для обновления или ошибку проверки.
-    ///
     /// # Errors
     /// Возвращает [`UpdaterError`], если вызов менеджера завершился неуспешно
     /// или вывод не удалось разобрать.
     fn check_updates(&self) -> Result<Vec<PackageUpdate>, UpdaterError>;
     /// Применяет обновления для выбранных пакетов.
     ///
-    /// # Arguments
-    /// * `force_yes` - Признак автоматического подтверждения.
-    /// * `selected_updates` - Явно выбранные обновления; пустой список означает
-    ///   использование стратегии обновлятора по умолчанию.
-    /// * `log_sender` - Канал для отправки строк лога.
-    ///
-    /// # Returns
-    /// `Ok(())` при успешном выполнении.
+    /// Пустой `selected_updates` означает использование стратегии обновлятора
+    /// по умолчанию; `force_yes` разрешает автоматическое подтверждение.
     ///
     /// # Errors
     /// Возвращает [`UpdaterError`], если команда обновления завершилась ошибкой.
@@ -47,37 +38,43 @@ pub trait Updater: Send + Sync {
     ) -> Result<(), UpdaterError>;
 }
 
-#[derive(Debug, Error)]
 /// Типизированные ошибки взаимодействия с внешними менеджерами пакетов.
+#[derive(Debug, Error)]
 pub enum UpdaterError {
+    /// Процесс не удалось создать.
     #[error("ошибка запуска команды `{program}`: {source}")]
     SpawnError {
         program: String,
         #[source]
         source: io::Error,
     },
+    /// Не удалось прочитать вывод или дождаться завершения процесса.
     #[error("ошибка чтения вывода команды `{program}`: {source}")]
     StreamError {
         program: String,
         #[source]
         source: io::Error,
     },
+    /// Команда завершилась ненулевым кодом там, где требуется успех.
     #[error("команда `{program}` завершилась с кодом {code:?}: {stderr}")]
     CommandFailed {
         program: String,
         code: Option<i32>,
         stderr: String,
     },
+    /// Менеджер вернул некорректный JSON.
     #[error("json error: {0}")]
     JsonError(#[from] serde_json::Error),
+    /// HTTP-запрос завершился ошибкой.
     #[error("http error: {0}")]
     HttpError(#[from] reqwest::Error),
+    /// Ошибка, не имеющая более специализированного варианта.
     #[error("{0}")]
     Message(String),
 }
 
-#[derive(Debug, Clone)]
 /// Результат выполнения внешней команды.
+#[derive(Debug, Clone)]
 pub struct CommandOutput {
     /// Захваченный `stdout`.
     pub stdout: String,
@@ -90,27 +87,7 @@ pub struct CommandOutput {
 }
 
 impl CommandOutput {
-    /// Объединяет `stdout` и `stderr` в один текстовый блок.
-    ///
-    /// # Arguments
-    /// Функция не принимает аргументов.
-    ///
-    /// # Returns
-    /// Строку с приоритетом непустых потоков: `stdout`, `stderr` или оба вместе.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let output = CommandOutput {
-    ///     stdout: "ok".into(),
-    ///     stderr: String::new(),
-    ///     exit_code: Some(0),
-    ///     success: true,
-    /// };
-    /// assert_eq!(output.merged_text(), "ok");
-    /// ```
+    /// Объединяет непустые `stdout` и `stderr`, сохраняя их порядок.
     pub fn merged_text(&self) -> String {
         if self.stderr.trim().is_empty() {
             return self.stdout.clone();
@@ -130,40 +107,14 @@ impl Display for CommandOutput {
     }
 }
 
-/// Проверяет наличие команды в переменной окружения `PATH`.
-///
-/// # Arguments
-/// * `program` - Имя исполняемого файла.
-///
-/// # Returns
-/// `true`, если команда найдена.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let _ = command_exists("cargo");
-/// ```
+/// Проверяет наличие исполняемого файла в `PATH`.
 pub fn command_exists(program: &str) -> bool {
     find_command(program).is_some()
 }
 
 /// Ищет полный путь к исполняемому файлу в `PATH`.
 ///
-/// # Arguments
-/// * `program` - Имя команды для поиска.
-///
-/// # Returns
-/// `Some(String)` с путем до найденной команды либо `None`.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let _path = find_command("rustup");
-/// ```
+/// На Windows учитывает расширения из `PATHEXT`.
 pub fn find_command(program: &str) -> Option<String> {
     let command_path = std::env::var_os("PATH")?;
     let path_entries = std::env::split_paths(&command_path);
@@ -202,25 +153,12 @@ pub fn find_command(program: &str) -> Option<String> {
 
 /// Выполняет команду и полностью захватывает вывод потоков.
 ///
-/// # Arguments
-/// * `program` - Имя исполняемой команды.
-/// * `args` - Аргументы запуска.
-///
-/// # Returns
-/// Структуру [`CommandOutput`] с потоками и кодом завершения.
+/// Ненулевой код завершения не преобразуется в ошибку: вызывающий код должен
+/// проверить [`CommandOutput::success`]. Это необходимо для команд проверки,
+/// которые сообщают о доступных обновлениях специальным кодом выхода.
 ///
 /// # Errors
 /// Возвращает [`UpdaterError::SpawnError`], если процесс не удалось запустить.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let output = capture_command("rustup", &["--version".to_owned()])?;
-/// println!("{}", output.stdout);
-/// # Ok::<(), UpdaterError>(())
-/// ```
 pub fn capture_command(program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
     let executable = find_command(program).unwrap_or_else(|| program.to_owned());
     let output = Command::new(executable)
@@ -243,27 +181,13 @@ pub fn capture_command(program: &str, args: &[String]) -> Result<CommandOutput, 
 
 /// Выполняет команду и потоково пересылает строки вывода в канал логов.
 ///
-/// # Arguments
-/// * `program` - Имя исполняемой команды.
-/// * `args` - Аргументы запуска.
-/// * `log_sender` - Канал для построчной передачи лога.
-///
-/// # Returns
-/// [`CommandOutput`] после завершения процесса.
+/// Как и [`capture_command`], возвращает [`CommandOutput`] при любом коде
+/// завершения. `stdout` и `stderr` читаются параллельно, чтобы дочерний процесс
+/// не заблокировался при заполнении одного из каналов.
 ///
 /// # Errors
 /// Возвращает [`UpdaterError`], если запуск, ожидание процесса или чтение
 /// потоков завершились неуспешно.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let (tx, _rx) = std::sync::mpsc::channel::<String>();
-/// let _ = stream_command("rustup", &["--version".to_owned()], &tx)?;
-/// # Ok::<(), UpdaterError>(())
-/// ```
 pub fn stream_command(
     program: &str,
     args: &[String],
@@ -368,23 +292,8 @@ fn emit_stream_message(
     }
 }
 
-/// Декодирует байтовый буфер в строку с учетом платформенных кодировок.
-///
-/// # Arguments
-/// * `bytes` - Сырые байты текстового вывода.
-///
-/// # Returns
-/// Декодированную строку (`UTF-8`, на Windows с попыткой `CP1251`/`CP866`,
-/// затем lossy fallback).
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let text = decode_bytes("hello".as_bytes());
-/// assert_eq!(text, "hello");
-/// ```
+/// Декодирует вывод как UTF-8, а на Windows дополнительно пробует CP1251 и
+/// CP866 перед заменой некорректных последовательностей.
 pub fn decode_bytes(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
@@ -410,23 +319,10 @@ pub fn decode_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// Эвристически извлекает список обновлений из текстового вывода менеджера.
+/// Эвристически извлекает обновления из строк `name current available`.
 ///
-/// # Arguments
-/// * `manager` - Имя менеджера пакетов (используется как префикс имени пакета).
-/// * `text` - Исходный текст для разбора.
-///
-/// # Returns
-/// Список распознанных [`PackageUpdate`].
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let updates = heuristic_parse_updates("apt", "foo 1.0 1.1");
-/// assert_eq!(updates.len(), 1);
-/// ```
+/// Для форматов с устойчивой структурой следует использовать специализированный
+/// парсер: эта функция намеренно пропускает шум, но не валидирует версии.
 pub fn heuristic_parse_updates(manager: &'static str, text: &str) -> Vec<PackageUpdate> {
     text.lines()
         .map(str::trim)

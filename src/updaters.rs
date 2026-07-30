@@ -254,23 +254,7 @@ const REGISTRY_SPECS: &[UpdaterSpec] = &[
     },
 ];
 
-/// Возвращает полный реестр обновляторов, доступных приложению.
-///
-/// # Arguments
-/// Функция не принимает аргументов.
-///
-/// # Returns
-/// Вектор дескрипторов, каждый из которых содержит динамический обработчик,
-/// тип модуля и требования по привилегиям.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let handlers = registry();
-/// assert!(!handlers.is_empty());
-/// ```
+/// Создаёт дескрипторы обновляторов в стабильном порядке [`REGISTRY_SPECS`].
 pub fn registry() -> Vec<UpdaterDescriptor> {
     REGISTRY_SPECS
         .iter()

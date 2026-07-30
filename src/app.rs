@@ -14,8 +14,8 @@ use std::thread;
 
 const MAX_PARALLEL_WORKERS: usize = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Фаза выполнения обновления отдельного модуля.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdatePhase {
     /// Модуль поставлен в очередь на выполнение.
     Queued,
@@ -28,21 +28,7 @@ pub enum UpdatePhase {
 }
 
 impl UpdatePhase {
-    /// Возвращает локализованную подпись фазы обновления.
-    ///
-    /// # Arguments
-    /// Функция не принимает аргументов.
-    ///
-    /// # Returns
-    /// Строковую метку для CLI/GUI.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// assert_eq!(UpdatePhase::Queued.label(), "В очереди");
-    /// ```
+    /// Возвращает локализованную подпись для CLI и GUI.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Queued => "В очереди",
@@ -53,8 +39,8 @@ impl UpdatePhase {
     }
 }
 
-#[derive(Debug, Clone)]
 /// Событие прогресса по конкретному модулю.
+#[derive(Debug, Clone)]
 pub struct ModuleUpdateProgress {
     /// Имя модуля.
     pub module_name: String,
@@ -64,8 +50,8 @@ pub struct ModuleUpdateProgress {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
 /// Фильтр выбора модулей для сканирования и обновления.
+#[derive(Debug, Clone, Default)]
 pub struct SelectionFilter {
     /// Исключить системные менеджеры.
     pub skip_system: bool,
@@ -80,22 +66,7 @@ pub struct SelectionFilter {
 }
 
 impl SelectionFilter {
-    /// Проверяет, попадает ли дескриптор в фильтр выбора.
-    ///
-    /// # Arguments
-    /// * `descriptor` - Дескриптор обновлятора из реестра.
-    ///
-    /// # Returns
-    /// `true`, если дескриптор должен быть включен в сканирование.
-    ///
-    /// # Panics
-    /// Не паникует.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let include = filter.includes_descriptor(&descriptor);
-    /// println!("{include}");
-    /// ```
+    /// Проверяет, должен ли дескриптор участвовать в сканировании.
     pub fn includes_descriptor(&self, descriptor: &UpdaterDescriptor) -> bool {
         if self.only_tools && descriptor.kind != ModuleKind::Tool {
             return false;
@@ -123,20 +94,12 @@ impl SelectionFilter {
 
 /// Выполняет параллельное сканирование модулей с учетом фильтра.
 ///
-/// # Arguments
-/// * `filter` - Правила включения/исключения модулей.
-///
-/// # Returns
-/// Список снимков модулей в стабильном порядке реестра.
+/// Возвращает снимки в стабильном порядке реестра, хотя проверки выполняются
+/// параллельно.
 ///
 /// # Panics
 /// Может паниковать при `poisoned mutex` или аварийном завершении worker-потока.
 ///
-/// # Examples
-/// ```rust,ignore
-/// let modules = discover_modules(&SelectionFilter::default());
-/// println!("{}", modules.len());
-/// ```
 pub fn discover_modules(filter: &SelectionFilter) -> Vec<ModuleSnapshot> {
     let scan_jobs = registry()
         .into_iter()
@@ -188,24 +151,8 @@ pub fn discover_modules(filter: &SelectionFilter) -> Vec<ModuleSnapshot> {
     modules.into_iter().map(|(_, snapshot)| snapshot).collect()
 }
 
-/// Сканирует один обновлятор и формирует снимок его состояния.
-///
-/// # Arguments
-/// * `updater` - Реализация обновлятора.
-/// * `kind` - Категория модуля.
-/// * `requires_elevation` - Нужны ли повышенные права.
-///
-/// # Returns
-/// Заполненный [`ModuleSnapshot`] с текущим статусом и списком обновлений.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let snapshot = scan_updater(&*descriptor.updater, descriptor.kind, descriptor.requires_elevation);
-/// println!("{}", snapshot.name);
-/// ```
+/// Сканирует один обновлятор и преобразует ошибку проверки в
+/// [`ModuleStatus::Error`].
 pub fn scan_updater(
     updater: &dyn Updater,
     kind: ModuleKind,
@@ -236,22 +183,7 @@ pub fn scan_updater(
     snapshot
 }
 
-/// Рендерит список модулей в таблицу для CLI.
-///
-/// # Arguments
-/// * `modules` - Массив снимков модулей.
-///
-/// # Returns
-/// Готовую строку таблицы в UTF-8 формате.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let text = render_cli_table(&modules);
-/// println!("{text}");
-/// ```
+/// Рендерит снимки модулей в UTF-8 таблицу для CLI.
 pub fn render_cli_table(modules: &[ModuleSnapshot]) -> String {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
@@ -283,23 +215,8 @@ pub fn render_cli_table(modules: &[ModuleSnapshot]) -> String {
     table.to_string()
 }
 
-/// Формирует предупреждение о нехватке прав для системных менеджеров.
-///
-/// # Arguments
-/// * `modules` - Список модулей после сканирования.
-///
-/// # Returns
-/// `Some(String)` с предупреждением или `None`, если предупреждение не нужно.
-///
-/// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// if let Some(warn) = summarize_elevation_warning(&modules) {
-///     eprintln!("{warn}");
-/// }
-/// ```
+/// Формирует предупреждение, если обнаруженному менеджеру нужны повышенные
+/// права, а текущий процесс ими не обладает.
 pub fn summarize_elevation_warning(modules: &[ModuleSnapshot]) -> Option<String> {
     if system::is_admin() {
         return None;
@@ -317,25 +234,11 @@ pub fn summarize_elevation_warning(modules: &[ModuleSnapshot]) -> Option<String>
 
 /// Запускает обновление модулей без явного канала прогресса.
 ///
-/// # Arguments
-/// * `modules` - Модули для обработки.
-/// * `force_yes` - Признак автоматического подтверждения команд.
-/// * `log_sender` - Канал для потокового лога.
-///
-/// # Returns
-/// Вектор пар `(имя_модуля, результат_обновления)`.
-///
-/// # Errors
-/// Ошибки отдельных модулей возвращаются во втором элементе каждой пары.
+/// Возвращает результаты только для фактически запущенных заданий; пропущенные
+/// модули отражаются в логе.
 ///
 /// # Panics
-/// Не паникует.
-///
-/// # Examples
-/// ```rust,ignore
-/// let (tx, _rx) = std::sync::mpsc::channel::<String>();
-/// let _results = run_updates(&modules, true, &tx);
-/// ```
+/// Паникует при аварийном завершении worker-потока.
 pub fn run_updates(
     modules: &[ModuleSnapshot],
     force_yes: bool,
@@ -346,27 +249,13 @@ pub fn run_updates(
 
 /// Запускает обновление модулей с передачей лога и событий прогресса.
 ///
-/// # Arguments
-/// * `modules` - Модули для обновления.
-/// * `force_yes` - Признак авто-подтверждения.
-/// * `log_sender` - Канал логирования.
-/// * `progress_sender` - Необязательный канал обновлений статуса по модулю.
-///
-/// # Returns
-/// Вектор результатов в порядке исходного списка модулей.
-///
-/// # Errors
-/// Ошибки выполнения возвращаются поэлементно через [`UpdaterError`].
+/// Результаты фактически запущенных заданий возвращаются в порядке входного
+/// списка. Пропущенные модули в результат не включаются, а ошибки отдельных
+/// заданий представлены значениями [`UpdaterError`].
 ///
 /// # Panics
 /// Может паниковать при аварийном завершении worker-потоков.
 ///
-/// # Examples
-/// ```rust,ignore
-/// let (log_tx, _log_rx) = std::sync::mpsc::channel::<String>();
-/// let results = run_updates_with_progress(&modules, false, &log_tx, None);
-/// println!("{}", results.len());
-/// ```
 pub fn run_updates_with_progress(
     modules: &[ModuleSnapshot],
     force_yes: bool,
@@ -618,7 +507,7 @@ fn worker_count_for(job_count: usize) -> usize {
         .map(|count| count.get())
         .unwrap_or(4);
 
-    job_count.min(available).min(MAX_PARALLEL_WORKERS).max(1)
+    job_count.min(available).clamp(1, MAX_PARALLEL_WORKERS)
 }
 
 fn skip_update_reason(
