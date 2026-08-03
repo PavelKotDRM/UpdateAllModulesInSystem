@@ -108,7 +108,13 @@ pub(super) fn apply_pip_updates(
             let _ = log_sender.send(format!(
                 "pip: обновление через python -m pip завершилось ошибкой ({error}); пробую uv"
             ));
-            run_uv_pip_stream(&args, log_sender)
+            // uv pip не понимает флаг pip `--no-input`
+            let uv_args: Vec<String> = args
+                .iter()
+                .filter(|arg| arg.as_str() != "--no-input")
+                .cloned()
+                .collect();
+            run_uv_pip_stream(&uv_args, log_sender)
         }
         Err(error) => Err(error),
     }
@@ -220,10 +226,9 @@ pub(super) fn apply_uv_updates(
         return Ok(());
     }
 
-    let mut args = vec!["update".to_owned()];
-    if force_yes {
-        args.push("--no-input".to_owned());
-    }
+    // `uv self update` неинтерактивна и не поддерживает флаги подтверждения
+    let _ = force_yes;
+    let args = vec!["update".to_owned()];
 
     run_uv_self_stream(&args, log_sender)
 }
