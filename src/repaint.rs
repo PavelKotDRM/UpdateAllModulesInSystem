@@ -6,6 +6,7 @@ use std::sync::mpsc::{self, Receiver, SendError, Sender};
 /// Возвращает настройки `eframe`, устойчивые к мерцанию на мониторах с VRR
 /// и высокой частотой обновления.
 pub fn stable_native_options() -> eframe::NativeOptions {
+    #[cfg(not(target_os = "windows"))]
     let surface = eframe::SurfaceConfig {
         present_mode: eframe::wgpu::PresentMode::Fifo,
         desired_maximum_frame_latency: Some(2),
@@ -13,6 +14,7 @@ pub fn stable_native_options() -> eframe::NativeOptions {
 
     let mut options = eframe::NativeOptions {
         dithering: false,
+        #[cfg(not(target_os = "windows"))]
         wgpu_options: eframe::WgpuConfiguration::default().with_surface_config(surface),
         ..Default::default()
     };
@@ -83,14 +85,17 @@ mod tests {
             assert_eq!(options.renderer, eframe::Renderer::Glow);
             assert!(options.glow_options.vsync);
         }
-        assert_eq!(
-            options.wgpu_options.surface.present_mode,
-            eframe::wgpu::PresentMode::Fifo
-        );
-        assert_eq!(
-            options.wgpu_options.surface.desired_maximum_frame_latency,
-            Some(2)
-        );
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(
+                options.wgpu_options.surface.present_mode,
+                eframe::wgpu::PresentMode::Fifo
+            );
+            assert_eq!(
+                options.wgpu_options.surface.desired_maximum_frame_latency,
+                Some(2)
+            );
+        }
     }
 
     #[test]

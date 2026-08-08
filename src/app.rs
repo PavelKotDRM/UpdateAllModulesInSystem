@@ -82,7 +82,7 @@ pub struct ModuleUpdateProgress {
 /// Рендерит снимки модулей в UTF-8 таблицу для CLI.
 pub fn render_cli_table(modules: &[ModuleSnapshot]) -> String {
     let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
+    table.load_style(UTF8_FULL);
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.set_header(vec!["Инструмент", "Установлен", "Статус", "Обновления"]);
 
