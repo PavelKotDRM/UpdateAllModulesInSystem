@@ -150,7 +150,7 @@ impl GuiApp {
     }
 
     pub(super) fn start_elevated(&mut self) {
-        if self.elevation_pending {
+        if self.busy || self.elevation_pending {
             return;
         }
 

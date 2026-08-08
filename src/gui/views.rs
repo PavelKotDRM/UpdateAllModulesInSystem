@@ -42,8 +42,15 @@ impl GuiApp {
 
             if !system::is_admin() {
                 let elevate_response = ui
-                    .add_enabled(!self.elevation_pending, egui::Button::new("Повысить права"))
-                    .on_hover_text("Перезапустить приложение с правами администратора");
+                    .add_enabled(
+                        !self.busy && !self.elevation_pending,
+                        egui::Button::new("Повысить права"),
+                    )
+                    .on_hover_text(if self.busy {
+                        "Дождитесь завершения текущей операции"
+                    } else {
+                        "Перезапустить приложение с правами администратора"
+                    });
                 if elevate_response.clicked() {
                     self.start_elevated();
                 }
