@@ -319,7 +319,7 @@ fn apply_editor_extensions(
 fn extension_install_args(update: &PackageUpdate) -> Vec<String> {
     let mut args = vec![
         "--install-extension".to_owned(),
-        update.name.clone(),
+        format!("{}@{}", update.name, update.available_version),
         "--force".to_owned(),
     ];
     if let Some(profile) = &update.scope {
@@ -629,7 +629,7 @@ mod tests {
             extension_install_args(&update),
             vec![
                 "--install-extension",
-                "ms-python.python",
+                "ms-python.python@2.0.0",
                 "--force",
                 "--profile",
                 "Python"
