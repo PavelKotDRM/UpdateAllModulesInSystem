@@ -5,9 +5,11 @@
 //! умолчанию, не блокируя запуск приложения.
 
 use serde::{Deserialize, Serialize};
+use crate::model::ModuleSnapshot;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const GUI_STATE_FILE: &str = ".update_all_modules_gui_state.json";
 
@@ -64,4 +66,27 @@ pub(super) fn save_gui_state(
     let text = serde_json::to_string_pretty(&state)?;
     fs::write(path, text)?;
     Ok(())
+}
+
+/// Сохраняет результаты сканирования для передачи в elevated-процесс.
+pub(super) fn save_elevation_modules(modules: &[ModuleSnapshot]) -> anyhow::Result<PathBuf> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| anyhow::anyhow!(error))?
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "update_all_modules_scan_{}_{}.json",
+        std::process::id(),
+        timestamp
+    ));
+    let text = serde_json::to_string(modules)?;
+    fs::write(&path, text)?;
+    Ok(path)
+}
+
+/// Загружает и удаляет одноразовый снимок результатов сканирования.
+pub(super) fn take_elevation_modules(path: &std::path::Path) -> Option<Vec<ModuleSnapshot>> {
+    let text = fs::read_to_string(path).ok()?;
+    let _ = fs::remove_file(path);
+    serde_json::from_str(&text).ok()
 }

@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 
 const SELF_UPDATE_SCOPE: &str = "самообновление";
+const PNPM_EXECUTABLE_PACKAGE: &str = "@pnpm/exe";
 const NODE_RELEASE_INDEX_URL: &str = "https://nodejs.org/dist/index.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,9 +88,13 @@ pub(super) fn pnpm_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     updates.extend(
         parse_outdated_packages("pnpm", &output)?
             .into_iter()
-            .filter(|update| update.name != "pnpm"),
+            .filter(|update| !is_pnpm_self_package(&update.name)),
     );
     Ok(updates)
+}
+
+fn is_pnpm_self_package(package_name: &str) -> bool {
+    matches!(package_name, "pnpm" | PNPM_EXECUTABLE_PACKAGE)
 }
 
 pub(super) fn pnpm_apply_updates(
@@ -529,6 +534,23 @@ mod tests {
         let updates = parse_outdated_packages("pnpm", &output).expect("pnpm json should parse");
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].name, "pnpm");
+    }
+
+    #[test]
+    fn pnpm_global_updates_exclude_the_self_managed_executable() {
+        let output = command_output(
+            r#"[{"name":"@pnpm/exe","current":"11.21.0","latest":"11.22.0"},{"name":"typescript","current":"5.8.0","latest":"5.9.0"}]"#,
+            true,
+        );
+
+        let updates = parse_outdated_packages("pnpm", &output)
+            .expect("pnpm json should parse")
+            .into_iter()
+            .filter(|update| !is_pnpm_self_package(&update.name))
+            .collect::<Vec<_>>();
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "typescript");
     }
 
     #[test]

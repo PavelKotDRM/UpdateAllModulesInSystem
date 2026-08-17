@@ -105,6 +105,7 @@ pub fn launch_gui(
     filter: SelectionFilter,
     auto_yes: bool,
     elevation_ready_file: Option<PathBuf>,
+    elevation_state_file: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     system::hide_windows_console_if_needed(true);
     let native_options = repaint::stable_native_options();
@@ -112,7 +113,15 @@ pub fn launch_gui(
         "UpdateAllModules",
         native_options,
         Box::new(move |creation_context| {
-            let app = GuiApp::new(filter, auto_yes, &creation_context.egui_ctx);
+            let previous_modules = elevation_state_file
+                .as_deref()
+                .and_then(state::take_elevation_modules);
+            let app = GuiApp::new(
+                filter,
+                auto_yes,
+                &creation_context.egui_ctx,
+                previous_modules,
+            );
             if let Some(path) = &elevation_ready_file {
                 fs::write(path, "ready")?;
             }

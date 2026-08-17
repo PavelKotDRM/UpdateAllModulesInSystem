@@ -2,12 +2,9 @@
 //!
 //! Сообщения вида `[модуль] текст` группируются по имени модуля. Сообщения
 //! без такого префикса относятся к группе `system`. Экспорт сохраняет все
-//! группы в текстовый файл внутри каталога `logs` рабочей директории.
+//! группы в JSON-формате в буфер обмена.
 
 use super::GuiApp;
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
 
 impl GuiApp {
     pub(super) fn append_log(&mut self, message: String) {
@@ -19,15 +16,16 @@ impl GuiApp {
         self.logs.values().map(Vec::len).sum()
     }
 
-    pub(super) fn export_logs(&mut self) {
-        match export_logs_to_file(&self.logs) {
-            Ok(path) => {
-                let message = format!("Логи экспортированы: {}", path.display());
+    pub(super) fn export_logs(&mut self, ctx: &egui::Context) {
+        match serde_json::to_string_pretty(&self.logs) {
+            Ok(logs_json) => {
+                ctx.copy_text(logs_json);
+                let message = "Логи скопированы в буфер обмена в формате JSON".to_owned();
                 self.status_line = message.clone();
                 self.append_log(format!("[system] {message}"));
             }
             Err(error) => {
-                let message = format!("Не удалось экспортировать логи: {error}");
+                let message = format!("Не удалось подготовить логи к экспорту: {error}");
                 self.status_line = message.clone();
                 self.append_log(format!("[system] Ошибка: {message}"));
             }
@@ -46,34 +44,3 @@ pub(super) fn split_module_log(message: &str) -> (String, String) {
     ("system".to_owned(), message.to_owned())
 }
 
-fn export_logs_to_file(logs: &BTreeMap<String, Vec<String>>) -> anyhow::Result<PathBuf> {
-    let cwd = std::env::current_dir()
-        .map_err(|error| anyhow::anyhow!("не удалось определить рабочую директорию: {error}"))?;
-
-    let logs_dir = cwd.join("logs");
-    fs::create_dir_all(&logs_dir)?;
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| anyhow::anyhow!("ошибка времени системы: {error}"))?
-        .as_secs();
-
-    let path = logs_dir.join(format!("update_all_modules_logs_{now}.txt"));
-    let content = if logs.is_empty() {
-        "Логи отсутствуют\n".to_owned()
-    } else {
-        let mut text = String::new();
-        for (module, lines) in logs {
-            text.push_str(&format!("[{module}]\n"));
-            for line in lines {
-                text.push_str(line);
-                text.push('\n');
-            }
-            text.push('\n');
-        }
-        text
-    };
-
-    fs::write(&path, content)?;
-    Ok(path)
-}

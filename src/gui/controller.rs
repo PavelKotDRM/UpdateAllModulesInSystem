@@ -3,7 +3,7 @@
 //! Контроллер запускает сканирование и обновление в рабочих потоках, принимает
 //! [`GuiEvent`] и синхронизирует результаты с состоянием UI.
 
-use super::state::{load_gui_state, save_gui_state};
+use super::state::{load_gui_state, save_elevation_modules, save_gui_state};
 use super::{GuiApp, GuiEvent, GuiTab};
 use crate::app::{
     ModuleUpdateProgress, SelectionFilter, UpdateCancellation, discover_modules,
@@ -13,13 +13,19 @@ use crate::model::ModuleSnapshot;
 use crate::{repaint, system};
 use eframe::egui;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::sync::mpsc;
 use std::thread;
 
 impl GuiApp {
     /// Создаёт GUI-приложение, восстанавливает сохранённое состояние и запускает
     /// первичное сканирование модулей.
-    pub fn new(filter: SelectionFilter, auto_yes: bool, context: &egui::Context) -> Self {
+    pub fn new(
+        filter: SelectionFilter,
+        auto_yes: bool,
+        context: &egui::Context,
+        previous_modules: Option<Vec<ModuleSnapshot>>,
+    ) -> Self {
         let (events_tx, events_rx) = repaint::channel(context);
         let persisted_state = load_gui_state();
         let persisted_selection: BTreeSet<String> =
@@ -35,7 +41,7 @@ impl GuiApp {
             filter,
             events_tx,
             events_rx,
-            modules: Vec::new(),
+            modules: previous_modules.unwrap_or_default(),
             logs: BTreeMap::new(),
             busy: false,
             auto_yes,
@@ -154,11 +160,31 @@ impl GuiApp {
             return;
         }
 
+        let missing_elevated_modules = Self::missing_elevated_module_names(&self.modules);
+        if missing_elevated_modules.is_empty() {
+            self.status_line = String::from("Нет отсутствующих модулей для повторной проверки");
+            return;
+        }
+
+        let elevation_state_file = match save_elevation_modules(&self.modules) {
+            Ok(path) => path,
+            Err(error) => {
+                let message = format!("Не удалось сохранить результаты сканирования: {error}");
+                self.status_line = message.clone();
+                self.append_log(format!("[system] Ошибка: {message}"));
+                return;
+            }
+        };
+
         self.elevation_pending = true;
         self.status_line = String::from("Запрос повышенных прав...");
         let sender = self.events_tx.clone();
         thread::spawn(move || {
-            let result = system::restart_elevated().map_err(|error| error.to_string());
+            let result = system::restart_elevated(&missing_elevated_modules, &elevation_state_file)
+                .map_err(|error| error.to_string());
+            if result.is_err() {
+                let _ = fs::remove_file(elevation_state_file);
+            }
             let _ = sender.send(GuiEvent::ElevationFinished(result));
         });
     }
@@ -191,6 +217,18 @@ impl GuiApp {
                 self.is_module_visible(module) && module.installed && module.status.has_updates()
             })
             .count()
+    }
+
+    fn missing_elevated_module_names(modules: &[ModuleSnapshot]) -> Vec<String> {
+        modules
+            .iter()
+            .filter(|module| module.requires_elevation && !module.installed)
+            .map(|module| module.name.clone())
+            .collect()
+    }
+
+    fn merge_scanned_modules(&mut self, scanned_modules: Vec<ModuleSnapshot>) {
+        merge_module_snapshots(&mut self.modules, scanned_modules);
     }
 
     fn apply_persisted_selection(&mut self) {
@@ -326,7 +364,7 @@ impl GuiApp {
                         .insert(progress.module_name.clone(), progress);
                 }
                 GuiEvent::ScanFinished(modules) => {
-                    self.modules = modules;
+                    self.merge_scanned_modules(modules);
                     self.module_progress.clear();
                     self.apply_persisted_selection();
                     self.busy = false;
@@ -353,5 +391,68 @@ impl GuiApp {
                 }
             }
         }
+    }
+}
+
+fn merge_module_snapshots(current_modules: &mut Vec<ModuleSnapshot>, scanned_modules: Vec<ModuleSnapshot>) {
+    if current_modules.is_empty() {
+        *current_modules = scanned_modules;
+        return;
+    }
+
+    let mut scanned_by_name = scanned_modules
+        .into_iter()
+        .map(|module| (module.name.clone(), module))
+        .collect::<BTreeMap<_, _>>();
+    for module in current_modules.iter_mut() {
+        if let Some(scanned_module) = scanned_by_name.remove(&module.name) {
+            *module = scanned_module;
+        }
+    }
+    current_modules.extend(scanned_by_name.into_values());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ModuleKind, ModuleStatus};
+
+    #[test]
+    fn selects_only_missing_modules_that_require_elevation() {
+        let mut missing_elevated = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
+        let mut installed_elevated = ModuleSnapshot::new("winget", ModuleKind::System, true);
+        installed_elevated.installed = true;
+        let missing_standard = ModuleSnapshot::new("npm", ModuleKind::Tool, false);
+        missing_elevated.installed = false;
+
+        assert_eq!(
+            GuiApp::missing_elevated_module_names(&[
+                missing_elevated,
+                installed_elevated,
+                missing_standard,
+            ]),
+            vec!["windows-update"]
+        );
+    }
+
+    #[test]
+    fn merges_elevated_scan_without_discarding_previous_modules() {
+        let mut retained_module = ModuleSnapshot::new("npm", ModuleKind::Tool, false);
+        retained_module.installed = true;
+        retained_module.status = ModuleStatus::UpToDate;
+        let missing_module = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
+
+        let mut scanned_module = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
+        scanned_module.installed = true;
+        scanned_module.status = ModuleStatus::UpdatesAvailable(1);
+
+        let mut modules = vec![retained_module, missing_module];
+        merge_module_snapshots(&mut modules, vec![scanned_module]);
+
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].name, "npm");
+        assert!(matches!(modules[0].status, ModuleStatus::UpToDate));
+        assert!(modules[1].installed);
+        assert!(matches!(modules[1].status, ModuleStatus::UpdatesAvailable(1)));
     }
 }

@@ -50,6 +50,10 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub elevation_ready_file: Option<PathBuf>,
 
+    /// Служебный снимок результатов до повышения прав.
+    #[arg(long, hide = true)]
+    pub elevation_state_file: Option<PathBuf>,
+
     /// Выводить подробные логи в CLI.
     #[arg(short = 'v', long = "verbose", help_heading = "РЕЖИМ ВЫПОЛНЕНИЯ")]
     pub verbose: bool,

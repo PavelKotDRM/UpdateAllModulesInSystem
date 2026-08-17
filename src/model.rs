@@ -1,7 +1,7 @@
 //! Типы доменной модели для описания модулей, статусов и доступных обновлений.
 
 /// Категория модуля, определяющая источник обновлений.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ModuleKind {
     /// Системный менеджер пакетов.
     System,
@@ -12,7 +12,7 @@ pub enum ModuleKind {
 }
 
 /// Описание одного доступного обновления пакета.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PackageUpdate {
     /// Логическое имя пакета в формате, зависящем от менеджера.
     pub name: String,
@@ -66,7 +66,7 @@ impl PackageUpdate {
 }
 
 /// Состояние модуля после проверки обновлений.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ModuleStatus {
     /// Менеджер или инструмент не обнаружен в системе.
     NotFound,
@@ -96,7 +96,7 @@ impl ModuleStatus {
 }
 
 /// Снимок состояния одного обновляемого модуля.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModuleSnapshot {
     /// Уникальное имя модуля.
     pub name: String,

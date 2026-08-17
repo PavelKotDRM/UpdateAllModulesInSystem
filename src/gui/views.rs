@@ -173,7 +173,7 @@ impl GuiApp {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Экспорт логов").clicked() {
-                self.export_logs();
+                self.export_logs(ui.ctx());
             }
             ui.label(format!("Модулей: {}", self.logs.len()));
             ui.separator();
