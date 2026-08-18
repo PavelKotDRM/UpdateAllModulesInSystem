@@ -62,6 +62,14 @@ impl SelectionFilter {
 /// Может паниковать при `poisoned mutex` или аварийном завершении worker-потока.
 ///
 pub fn discover_modules(filter: &SelectionFilter) -> Vec<ModuleSnapshot> {
+    discover_modules_with_progress(filter, |_, _| {})
+}
+
+/// Выполняет параллельное сканирование и сообщает количество готовых снимков.
+pub fn discover_modules_with_progress(
+    filter: &SelectionFilter,
+    mut report_progress: impl FnMut(usize, usize),
+) -> Vec<ModuleSnapshot> {
     let scan_jobs = registry()
         .into_iter()
         .enumerate()
@@ -104,7 +112,11 @@ pub fn discover_modules(filter: &SelectionFilter) -> Vec<ModuleSnapshot> {
     drop(result_tx);
 
     // Сканирование идет параллельно, но наружу возвращаем стабильный порядок реестра.
-    let mut modules = result_rx.iter().take(expected_results).collect::<Vec<_>>();
+    let mut modules = Vec::with_capacity(expected_results);
+    for (completed, result) in result_rx.iter().take(expected_results).enumerate() {
+        modules.push(result);
+        report_progress(completed + 1, expected_results);
+    }
     for handle in handles {
         handle.join().expect("scan worker panicked");
     }

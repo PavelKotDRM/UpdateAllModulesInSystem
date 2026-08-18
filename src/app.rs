@@ -2,7 +2,7 @@
 
 mod discovery;
 
-pub use discovery::{SelectionFilter, discover_modules};
+pub use discovery::{SelectionFilter, discover_modules, discover_modules_with_progress};
 
 use crate::model::{ModuleKind, ModuleSnapshot};
 use crate::system;
@@ -356,7 +356,12 @@ fn run_update_job(
             let _ = log_sender.send(format_module_log(&module_name, "Этап: завершено"));
         }
         Err(error) => {
-            send_progress(&progress_sender, &module_name, UpdatePhase::Failed);
+            send_progress_with_detail(
+                &progress_sender,
+                &module_name,
+                UpdatePhase::Failed,
+                error.to_string(),
+            );
             let _ = log_sender.send(format_module_log(
                 &module_name,
                 format!("Этап: ошибка: {error}"),
@@ -481,6 +486,21 @@ fn send_progress(
             module_name: module_name.to_owned(),
             phase,
             detail: None,
+        });
+    }
+}
+
+fn send_progress_with_detail(
+    progress_sender: &Option<Sender<ModuleUpdateProgress>>,
+    module_name: &str,
+    phase: UpdatePhase,
+    detail: String,
+) {
+    if let Some(sender) = progress_sender {
+        let _ = sender.send(ModuleUpdateProgress {
+            module_name: module_name.to_owned(),
+            phase,
+            detail: Some(detail),
         });
     }
 }

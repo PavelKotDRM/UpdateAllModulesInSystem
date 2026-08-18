@@ -6,7 +6,7 @@
 use super::state::{load_gui_state, save_elevation_modules, save_gui_state};
 use super::{GuiApp, GuiEvent, GuiTab};
 use crate::app::{
-    ModuleUpdateProgress, SelectionFilter, UpdateCancellation, discover_modules,
+    ModuleUpdateProgress, SelectionFilter, UpdateCancellation, discover_modules_with_progress,
     run_updates_with_progress_cancellable,
 };
 use crate::model::{ModuleSnapshot, ModuleStatus};
@@ -73,7 +73,9 @@ impl GuiApp {
         let filter = self.filter.clone();
         let sender = self.events_tx.clone();
         thread::spawn(move || {
-            let modules = discover_modules(&filter);
+            let modules = discover_modules_with_progress(&filter, |completed, total| {
+                let _ = sender.send(GuiEvent::ScanProgress { completed, total });
+            });
             let _ = sender.send(GuiEvent::ScanFinished(modules));
         });
     }
@@ -230,8 +232,8 @@ impl GuiApp {
             .collect()
     }
 
-    fn merge_scanned_modules(&mut self, scanned_modules: Vec<ModuleSnapshot>) {
-        merge_module_snapshots(&mut self.modules, scanned_modules);
+    fn replace_scanned_modules(&mut self, scanned_modules: Vec<ModuleSnapshot>) {
+        self.modules = scanned_modules;
     }
 
     fn apply_persisted_selection(&mut self) {
@@ -256,7 +258,7 @@ impl GuiApp {
         }
     }
 
-    fn is_module_visible(&self, module: &ModuleSnapshot) -> bool {
+    pub(super) fn is_module_visible(&self, module: &ModuleSnapshot) -> bool {
         if !module.installed {
             return self.show_not_found;
         }
@@ -371,14 +373,18 @@ impl GuiApp {
                     self.module_progress
                         .insert(progress.module_name.clone(), progress);
                 }
+                GuiEvent::ScanProgress { completed, total } => {
+                    self.status_line = format!("Сканирование: проверено {completed}/{total}");
+                }
                 GuiEvent::ScanFinished(modules) => {
                     let module_count = modules.len();
                     let update_count = modules
                         .iter()
                         .map(|module| module.updates.len())
                         .sum::<usize>();
-                    self.merge_scanned_modules(modules);
-                    self.module_progress.clear();
+                    self.replace_scanned_modules(modules);
+                    self.module_progress
+                        .retain(|_, progress| progress.phase == crate::app::UpdatePhase::Failed);
                     self.apply_persisted_selection();
                     self.busy = false;
                     self.started_scan = false;
@@ -412,24 +418,6 @@ impl GuiApp {
     }
 }
 
-fn merge_module_snapshots(current_modules: &mut Vec<ModuleSnapshot>, scanned_modules: Vec<ModuleSnapshot>) {
-    if current_modules.is_empty() {
-        *current_modules = scanned_modules;
-        return;
-    }
-
-    let mut scanned_by_name = scanned_modules
-        .into_iter()
-        .map(|module| (module.name.clone(), module))
-        .collect::<BTreeMap<_, _>>();
-    for module in current_modules.iter_mut() {
-        if let Some(scanned_module) = scanned_by_name.remove(&module.name) {
-            *module = scanned_module;
-        }
-    }
-    current_modules.extend(scanned_by_name.into_values());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,23 +442,71 @@ mod tests {
     }
 
     #[test]
-    fn merges_elevated_scan_without_discarding_previous_modules() {
-        let mut retained_module = ModuleSnapshot::new("npm", ModuleKind::Tool, false);
-        retained_module.installed = true;
-        retained_module.status = ModuleStatus::UpToDate;
-        let missing_module = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
-
+    fn replaces_previous_modules_with_full_rescan() {
         let mut scanned_module = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
         scanned_module.installed = true;
         scanned_module.status = ModuleStatus::UpdatesAvailable(1);
 
-        let mut modules = vec![retained_module, missing_module];
-        merge_module_snapshots(&mut modules, vec![scanned_module]);
+        let mut app = GuiApp {
+            filter: SelectionFilter::default(),
+            events_tx: repaint::channel(&egui::Context::default()).0,
+            events_rx: mpsc::channel().1,
+            modules: vec![ModuleSnapshot::new("npm", ModuleKind::Tool, false)],
+            logs: BTreeMap::new(),
+            busy: false,
+            auto_yes: false,
+            status_line: String::new(),
+            started_scan: false,
+            persisted_selection: BTreeSet::new(),
+            persisted_update_selection: BTreeMap::new(),
+            active_tab: GuiTab::Overview,
+            show_not_found: false,
+            show_up_to_date: false,
+            module_progress: BTreeMap::new(),
+            update_cancellation: None,
+            elevation_pending: false,
+            close_after_elevation: false,
+        };
+        app.replace_scanned_modules(vec![scanned_module]);
 
-        assert_eq!(modules.len(), 2);
-        assert_eq!(modules[0].name, "npm");
-        assert!(matches!(modules[0].status, ModuleStatus::UpToDate));
-        assert!(modules[1].installed);
-        assert!(matches!(modules[1].status, ModuleStatus::UpdatesAvailable(1)));
+        assert_eq!(app.modules.len(), 1);
+        assert_eq!(app.modules[0].name, "windows-update");
+        assert!(app.modules[0].installed);
+        assert!(matches!(app.modules[0].status, ModuleStatus::UpdatesAvailable(1)));
+    }
+
+    #[test]
+    fn hides_up_to_date_modules_unless_enabled() {
+        let app = GuiApp {
+            filter: SelectionFilter::default(),
+            events_tx: repaint::channel(&egui::Context::default()).0,
+            events_rx: mpsc::channel().1,
+            modules: Vec::new(),
+            logs: BTreeMap::new(),
+            busy: false,
+            auto_yes: false,
+            status_line: String::new(),
+            started_scan: false,
+            persisted_selection: BTreeSet::new(),
+            persisted_update_selection: BTreeMap::new(),
+            active_tab: GuiTab::Overview,
+            show_not_found: false,
+            show_up_to_date: false,
+            module_progress: BTreeMap::new(),
+            update_cancellation: None,
+            elevation_pending: false,
+            close_after_elevation: false,
+        };
+        let mut module = ModuleSnapshot::new("npm", ModuleKind::Tool, false);
+        module.installed = true;
+        module.status = ModuleStatus::UpToDate;
+
+        assert!(!app.is_module_visible(&module));
+
+        let app = GuiApp {
+            show_up_to_date: true,
+            ..app
+        };
+        assert!(app.is_module_visible(&module));
     }
 }

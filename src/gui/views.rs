@@ -132,6 +132,8 @@ impl GuiApp {
                 let mut selection_changed = false;
                 let visible_count = self.visible_modules_count();
                 let module_progress = &self.module_progress;
+                let show_not_found = self.show_not_found;
+                let show_up_to_date = self.show_up_to_date;
 
                 if visible_count == 0 {
                     ui.label("Нет отображаемых модулей. Включите показ не найденных в настройках или выполните сканирование.");
@@ -140,7 +142,10 @@ impl GuiApp {
 
                 if columns == 1 {
                     for module in &mut self.modules {
-                        if !self.show_not_found && !module.installed {
+                        if (!show_not_found && !module.installed)
+                            || (!show_up_to_date
+                                && matches!(module.status, crate::model::ModuleStatus::UpToDate))
+                        {
                             continue;
                         }
                         let progress = module_progress.get(&module.name);
@@ -150,7 +155,10 @@ impl GuiApp {
                     ui.columns(columns, |columns_ui| {
                         let mut visible_index = 0usize;
                         for module in &mut self.modules {
-                            if !self.show_not_found && !module.installed {
+                            if (!show_not_found && !module.installed)
+                                || (!show_up_to_date
+                                    && matches!(module.status, crate::model::ModuleStatus::UpToDate))
+                            {
                                 continue;
                             }
                             let column = &mut columns_ui[visible_index % columns];

@@ -25,6 +25,8 @@ pub enum GuiEvent {
     ModuleProgress(ModuleUpdateProgress),
     /// Завершение сканирования с итоговым списком модулей.
     ScanFinished(Vec<ModuleSnapshot>),
+    /// Прогресс сканирования модулей.
+    ScanProgress { completed: usize, total: usize },
     /// Завершение процесса обновления с итоговым сообщением.
     UpdateFinished(String),
     /// Результат попытки перезапуска с повышенными правами.

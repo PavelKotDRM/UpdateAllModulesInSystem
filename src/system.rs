@@ -33,8 +33,8 @@ pub fn should_warn_about_elevation() -> bool {
     !is_admin()
 }
 
-/// Повторно запускает текущий процесс с повышенными правами, ограничивая
-/// повторное сканирование переданными модулями.
+/// Повторно запускает текущий процесс с повышенными правами для полного
+/// повторного сканирования.
 ///
 /// # Errors
 /// Возвращает ошибку, если исполняемый файл не найден, средство повышения прав
@@ -52,7 +52,7 @@ pub fn restart_elevated(module_names: &[String], elevation_state_file: &Path) ->
 }
 
 #[cfg(target_os = "windows")]
-fn restart_elevated_impl(module_names: &[String], elevation_state_file: &Path) -> Result<()> {
+fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
@@ -66,7 +66,7 @@ fn restart_elevated_impl(module_names: &[String], elevation_state_file: &Path) -
         .chain(Some(0))
         .collect::<Vec<_>>();
     let operation = "runas\0".encode_utf16().collect::<Vec<_>>();
-    let parameters = elevated_arguments(module_names, elevation_state_file)
+    let parameters = elevated_arguments(elevation_state_file)
         .encode_utf16()
         .chain(Some(0))
         .collect::<Vec<_>>();
@@ -93,7 +93,7 @@ fn restart_elevated_impl(module_names: &[String], elevation_state_file: &Path) -
 }
 
 #[cfg(target_os = "windows")]
-fn elevated_arguments(module_names: &[String], elevation_state_file: &Path) -> String {
+fn elevated_arguments(elevation_state_file: &Path) -> String {
     let mut raw_arguments = std::env::args_os().skip(1).peekable();
     let mut arguments = Vec::new();
 
@@ -111,10 +111,6 @@ fn elevated_arguments(module_names: &[String], elevation_state_file: &Path) -> S
 
     if arguments.is_empty() {
         arguments.push("--gui".to_owned());
-    }
-    for module_name in module_names {
-        arguments.push("--only".to_owned());
-        arguments.push(quote_windows_argument(module_name));
     }
     arguments.push("--elevation-state-file".to_owned());
     arguments.push(quote_windows_argument(&elevation_state_file.to_string_lossy()));
@@ -208,9 +204,6 @@ fn restart_elevated_impl(module_names: &[String], elevation_state_file: &Path) -
         command.arg("--gui");
     } else {
         command.args(arguments);
-    }
-    for module_name in module_names {
-        command.arg("--only").arg(module_name);
     }
     command
         .arg("--elevation-state-file")
