@@ -14,7 +14,6 @@ impl GuiApp {
                 .add_enabled(!self.busy, egui::Button::new("Проверить обновления"))
                 .clicked()
             {
-                self.started_scan = false;
                 self.start_scan();
             }
 
@@ -217,6 +216,12 @@ impl GuiApp {
         let show_not_found_response =
             ui.checkbox(&mut self.show_not_found, "Показывать не найденные модули");
         if show_not_found_response.changed() {
+            self.persist_state();
+        }
+
+        let show_up_to_date_response =
+            ui.checkbox(&mut self.show_up_to_date, "Показывать актуальные модули");
+        if show_up_to_date_response.changed() {
             self.persist_state();
         }
 

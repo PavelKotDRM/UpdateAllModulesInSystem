@@ -70,6 +70,7 @@ pub struct GuiApp {
     persisted_update_selection: BTreeMap<String, BTreeSet<String>>,
     active_tab: GuiTab,
     show_not_found: bool,
+    show_up_to_date: bool,
     module_progress: BTreeMap<String, ModuleUpdateProgress>,
     update_cancellation: Option<UpdateCancellation>,
     elevation_pending: bool,

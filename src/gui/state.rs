@@ -18,6 +18,7 @@ pub(super) struct GuiState {
     pub(super) selected_modules: Vec<String>,
     pub(super) auto_yes: Option<bool>,
     pub(super) show_not_found: Option<bool>,
+    pub(super) show_up_to_date: Option<bool>,
     pub(super) selected_updates: BTreeMap<String, Vec<String>>,
 }
 
@@ -51,6 +52,7 @@ pub(super) fn save_gui_state(
     selected_updates: &BTreeMap<String, BTreeSet<String>>,
     auto_yes: bool,
     show_not_found: bool,
+    show_up_to_date: bool,
 ) -> anyhow::Result<()> {
     let path = gui_state_path()
         .ok_or_else(|| anyhow::anyhow!("не удалось определить рабочую директорию"))?;
@@ -58,6 +60,7 @@ pub(super) fn save_gui_state(
         selected_modules: selection.iter().cloned().collect(),
         auto_yes: Some(auto_yes),
         show_not_found: Some(show_not_found),
+        show_up_to_date: Some(show_up_to_date),
         selected_updates: selected_updates
             .iter()
             .map(|(module, updates)| (module.clone(), updates.iter().cloned().collect()))

@@ -344,7 +344,9 @@ fn run_update_job(
         }
     });
 
-    let outcome = updater.apply_updates(force_yes, &selected_updates, &module_log_tx);
+    let outcome = updater
+        .apply_updates(force_yes, &selected_updates, &module_log_tx)
+        .and_then(|()| verify_selected_updates_applied(&*updater, &selected_updates));
     drop(module_log_tx);
     let _ = forward_handle.join();
 
@@ -363,6 +365,31 @@ fn run_update_job(
     }
 
     (index, module_name, outcome)
+}
+
+fn verify_selected_updates_applied(
+    updater: &dyn Updater,
+    selected_updates: &[crate::model::PackageUpdate],
+) -> Result<(), UpdaterError> {
+    let remaining_updates = updater.check_updates()?;
+    let remaining_names = selected_updates
+        .iter()
+        .filter(|selected| {
+            remaining_updates
+                .iter()
+                .any(|remaining| remaining.selection_key() == selected.selection_key())
+        })
+        .map(crate::model::PackageUpdate::display_name)
+        .collect::<Vec<_>>();
+
+    if remaining_names.is_empty() {
+        return Ok(());
+    }
+
+    Err(UpdaterError::Message(format!(
+        "обновление не подтверждено повторной проверкой; всё ещё доступны: {}",
+        remaining_names.join(", ")
+    )))
 }
 
 fn format_module_log(module_name: &str, message: impl AsRef<str>) -> String {
@@ -690,7 +717,7 @@ mod tests {
         let updater: Box<dyn Updater> = Box::new(FakeUpdater {
             name: "fake",
             installed: true,
-            updates: vec![PackageUpdate::new("pkg", "1.0", "1.1")],
+            updates: Vec::new(),
             fail_message: None,
         });
         let job = UpdateJob {
@@ -713,6 +740,34 @@ mod tests {
             .map(|progress| progress.phase)
             .collect::<Vec<_>>();
         assert_eq!(phases, vec![UpdatePhase::Running, UpdatePhase::Completed]);
+    }
+
+    #[test]
+    fn run_update_job_fails_when_selected_update_remains_available() {
+        let updater: Box<dyn Updater> = Box::new(FakeUpdater {
+            name: "fake",
+            installed: true,
+            updates: vec![PackageUpdate::new("pkg", "1.0", "1.1")],
+            fail_message: None,
+        });
+        let job = UpdateJob {
+            index: 0,
+            module_name: "fake".to_owned(),
+            updater,
+            selected_updates: vec![PackageUpdate::new("pkg", "1.0", "1.1")],
+        };
+
+        let (log_tx, _log_rx) = std::sync::mpsc::channel::<String>();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel::<ModuleUpdateProgress>();
+
+        let (_, _, result) = run_update_job(job, true, &log_tx, Some(progress_tx));
+
+        assert!(result.unwrap_err().to_string().contains("не подтверждено"));
+        let phases = progress_rx
+            .iter()
+            .map(|progress| progress.phase)
+            .collect::<Vec<_>>();
+        assert_eq!(phases, vec![UpdatePhase::Running, UpdatePhase::Failed]);
     }
 
     #[test]

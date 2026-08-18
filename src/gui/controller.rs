@@ -9,7 +9,7 @@ use crate::app::{
     ModuleUpdateProgress, SelectionFilter, UpdateCancellation, discover_modules,
     run_updates_with_progress_cancellable,
 };
-use crate::model::ModuleSnapshot;
+use crate::model::{ModuleSnapshot, ModuleStatus};
 use crate::{repaint, system};
 use eframe::egui;
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,6 +37,7 @@ impl GuiApp {
             .collect();
         let auto_yes = persisted_state.auto_yes.unwrap_or(auto_yes);
         let show_not_found = persisted_state.show_not_found.unwrap_or(false);
+        let show_up_to_date = persisted_state.show_up_to_date.unwrap_or(false);
         let mut app = Self {
             filter,
             events_tx,
@@ -51,6 +52,7 @@ impl GuiApp {
             persisted_update_selection,
             active_tab: GuiTab::Overview,
             show_not_found,
+            show_up_to_date,
             module_progress: BTreeMap::new(),
             update_cancellation: None,
             elevation_pending: false,
@@ -67,6 +69,7 @@ impl GuiApp {
         self.started_scan = true;
         self.busy = true;
         self.status_line = String::from("Сканирование...");
+        self.append_log(String::from("[system] Проверка обновлений запущена"));
         let filter = self.filter.clone();
         let sender = self.events_tx.clone();
         thread::spawn(move || {
@@ -254,7 +257,11 @@ impl GuiApp {
     }
 
     fn is_module_visible(&self, module: &ModuleSnapshot) -> bool {
-        self.show_not_found || module.installed
+        if !module.installed {
+            return self.show_not_found;
+        }
+
+        self.show_up_to_date || !matches!(module.status, ModuleStatus::UpToDate)
     }
 
     pub(super) fn visible_modules_count(&self) -> usize {
@@ -348,6 +355,7 @@ impl GuiApp {
             &self.persisted_update_selection,
             self.auto_yes,
             self.show_not_found,
+            self.show_up_to_date,
         ) {
             self.append_log(format!(
                 "[system] Не удалось сохранить состояние GUI: {error}"
@@ -364,11 +372,21 @@ impl GuiApp {
                         .insert(progress.module_name.clone(), progress);
                 }
                 GuiEvent::ScanFinished(modules) => {
+                    let module_count = modules.len();
+                    let update_count = modules
+                        .iter()
+                        .map(|module| module.updates.len())
+                        .sum::<usize>();
                     self.merge_scanned_modules(modules);
                     self.module_progress.clear();
                     self.apply_persisted_selection();
                     self.busy = false;
-                    self.status_line = String::from("Сканирование завершено");
+                    self.started_scan = false;
+                    let message = format!(
+                        "Проверка завершена: модулей {module_count}, доступно обновлений {update_count}"
+                    );
+                    self.append_log(format!("[system] {message}"));
+                    self.status_line = message;
                 }
                 GuiEvent::UpdateFinished(message) => {
                     self.busy = false;
