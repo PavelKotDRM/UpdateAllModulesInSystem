@@ -242,7 +242,11 @@ pub(super) fn parse_choco_updates(text: &str) -> Vec<PackageUpdate> {
             let name = parts[0].trim();
             let current = parts[1].trim();
             let available = parts[2].trim();
-            if name.is_empty() || current.is_empty() || available.is_empty() {
+            if name.is_empty()
+                || current.is_empty()
+                || available.is_empty()
+                || current == available
+            {
                 return None;
             }
 
@@ -361,6 +365,20 @@ python|3.12.0|3.12.4|false\n\
         assert_eq!(updates[0].current_version, "2.45.0");
         assert_eq!(updates[0].available_version, "2.46.0");
         assert_eq!(updates[1].name, "choco:python");
+    }
+
+    #[test]
+    fn parse_choco_updates_ignores_packages_with_matching_versions() {
+        let text = "\
+chocolatey|2.7.3|2.7.3|false\n\
+python|3.14.7|3.14.7|false\n\
+git|2.45.0|2.46.0|false\n\
+";
+
+        let updates = parse_choco_updates(text);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "choco:git");
     }
 
     #[test]
