@@ -1,6 +1,6 @@
 [package]
 name = "update_all_modules"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 build = "build.rs"
 
@@ -35,7 +35,14 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(not(windows))'.dependencies]
-eframe = "0.36"
+eframe = { version = "0.36", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "links",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
 
 [build-dependencies]
 vergen-gitcl = "10"
