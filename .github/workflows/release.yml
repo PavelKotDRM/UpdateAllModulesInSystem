@@ -9,9 +9,31 @@ permissions:
   contents: write
 
 jobs:
+  verify-version:
+    name: Verify release version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Match tag to Cargo package version
+        shell: bash
+        run: |
+          package_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "update_all_modules") | .version')"
+          expected_tag="v${package_version}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${expected_tag}" >&2
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    needs: verify-version
     env:
       ASSET_NAME: update_all_modules-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive_ext }}
     strategy:
@@ -26,6 +48,11 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+            binary_name: update_all_modules
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
             archive_ext: tar.gz
             binary_name: update_all_modules
 

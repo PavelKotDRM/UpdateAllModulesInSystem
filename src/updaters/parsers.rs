@@ -55,6 +55,42 @@ pub(super) fn parse_pkcon_updates(text: &str) -> Vec<PackageUpdate> {
         .collect()
 }
 
+/// Разбирает машинный формат `brew outdated --json=v2`.
+pub(super) fn parse_brew_updates(text: &str) -> Result<Vec<PackageUpdate>, UpdaterError> {
+    #[derive(Deserialize)]
+    struct BrewOutdated {
+        #[serde(default)]
+        formulae: Vec<BrewPackage>,
+        #[serde(default)]
+        casks: Vec<BrewPackage>,
+    }
+
+    #[derive(Deserialize)]
+    struct BrewPackage {
+        name: String,
+        #[serde(default)]
+        installed_versions: Vec<String>,
+        current_version: String,
+    }
+
+    let outdated = serde_json::from_str::<BrewOutdated>(text)?;
+    Ok(outdated
+        .formulae
+        .into_iter()
+        .chain(outdated.casks)
+        .filter_map(|package| {
+            let installed = package.installed_versions.last()?.clone();
+            (installed != package.current_version).then(|| {
+                PackageUpdate::new(
+                    format!("brew:{}", package.name),
+                    installed,
+                    package.current_version,
+                )
+            })
+        })
+        .collect())
+}
+
 fn parse_apt_update_line(line: &str, manager: &str) -> Option<PackageUpdate> {
     if let Some(rest) = line.strip_prefix("Inst ") {
         return parse_apt_get_install_line(rest, manager);
@@ -242,10 +278,7 @@ pub(super) fn parse_choco_updates(text: &str) -> Vec<PackageUpdate> {
             let name = parts[0].trim();
             let current = parts[1].trim();
             let available = parts[2].trim();
-            if name.is_empty()
-                || current.is_empty()
-                || available.is_empty()
-                || current == available
+            if name.is_empty() || current.is_empty() || available.is_empty() || current == available
             {
                 return None;
             }
@@ -350,6 +383,31 @@ mod tests {
         assert_eq!(updates[0].name, "pkcon:firefox");
         assert_eq!(updates[0].available_version, "128.0.3-alt1");
         assert_eq!(updates[1].name, "pkcon:kernel-image");
+    }
+
+    #[test]
+    fn parse_brew_updates_reads_formulae_and_casks_from_json() {
+        let text = r#"{
+            "formulae": [{
+                "name": "git",
+                "installed_versions": ["2.45.0"],
+                "current_version": "2.46.0"
+            }],
+            "casks": [{
+                "name": "firefox",
+                "installed_versions": ["128.0"],
+                "current_version": "129.0"
+            }]
+        }"#;
+
+        let updates = parse_brew_updates(text).unwrap();
+
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].name, "brew:git");
+        assert_eq!(updates[0].current_version, "2.45.0");
+        assert_eq!(updates[0].available_version, "2.46.0");
+        assert_eq!(updates[1].name, "brew:firefox");
+        assert_eq!(updates[1].available_version, "129.0");
     }
 
     #[test]

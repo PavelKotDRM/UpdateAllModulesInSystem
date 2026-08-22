@@ -242,10 +242,7 @@ impl GuiApp {
         ui.separator();
         ui.small(format!("Версия: {}", crate::build_info::VERSION));
         ui.small(format!("Коммит: {}", crate::build_info::GIT_HASH));
-        ui.small(format!(
-            "Описание сборки: {}",
-            crate::build_info::DESCRIPTION
-        ));
+        ui.small(format!("Есть изменения: {}", crate::build_info::GIT_DIRTY));
 
         egui::CollapsingHeader::new("Подробная информация о сборке")
             .default_open(false)

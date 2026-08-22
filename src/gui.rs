@@ -111,6 +111,12 @@ pub fn launch_gui(
     elevation_state_file: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     system::hide_windows_console_if_needed(true);
+    if let Some(path) = &elevation_state_file {
+        system::validate_elevation_state_file(path)?;
+    }
+    if let Some(path) = &elevation_ready_file {
+        system::validate_elevation_ready_file(path)?;
+    }
     let native_options = repaint::stable_native_options();
     eframe::run_native(
         "UpdateAllModules",

@@ -34,14 +34,16 @@ use anyhow::Result;
 use clap::Parser;
 use cli::Cli;
 use std::collections::BTreeSet;
+use std::process::ExitCode;
 
 /// Запускает CLI или GUI в зависимости от аргументов командной строки.
 ///
 /// # Errors
 /// Возвращает ошибку запуска GUI либо аварийного завершения управляющего
 /// потока обновлений в CLI.
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
+    validate_only_modules(&cli.only)?;
     let raw_args: Vec<String> = std::env::args().collect();
     let gui_mode = cli.gui || raw_args.len() == 1;
 
@@ -56,10 +58,28 @@ fn main() -> Result<()> {
             cli.elevation_ready_file,
             cli.elevation_state_file,
         )?;
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     run_cli(cli, filter)
+}
+
+fn validate_only_modules(only: &[String]) -> Result<()> {
+    let available = updaters::updater_names().collect::<BTreeSet<_>>();
+    let unknown = only
+        .iter()
+        .filter(|name| !available.contains(name.as_str()))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "неизвестные имена модулей: {}. Доступные имена: {}",
+        unknown.into_iter().collect::<Vec<_>>().join(", "),
+        available.into_iter().collect::<Vec<_>>().join(", ")
+    )
 }
 
 /// Преобразует параметры CLI в фильтр реестра обновляторов.
@@ -77,8 +97,11 @@ fn build_selection_filter(cli: &Cli) -> app::SelectionFilter {
 ///
 /// # Errors
 /// Возвращает ошибку, если управляющий поток обновлений завершился паникой.
-fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<()> {
+fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<ExitCode> {
     let modules = app::discover_modules(&filter);
+    let scan_failed = modules
+        .iter()
+        .any(|module| matches!(module.status, model::ModuleStatus::Error(_)));
 
     if let Some(warning) = app::summarize_elevation_warning(&modules) {
         eprintln!("{warning}");
@@ -87,7 +110,7 @@ fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<()> {
     println!("{}", app::render_cli_table(&modules));
 
     if cli.check {
-        return Ok(());
+        return Ok(exit_code_for_failures(scan_failed, false));
     }
 
     let (log_tx, log_rx) = std::sync::mpsc::channel::<String>();
@@ -119,5 +142,48 @@ fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<()> {
         }
     }
 
-    Ok(())
+    let update_failed = results.iter().any(|(_, result)| result.is_err());
+    Ok(exit_code_for_failures(scan_failed, update_failed))
+}
+
+fn exit_code_for_failures(scan_failed: bool, update_failed: bool) -> ExitCode {
+    if scan_failed || update_failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{exit_code_for_failures, validate_only_modules};
+    use std::process::ExitCode;
+
+    #[test]
+    fn cli_fails_when_scan_or_update_fails() {
+        assert_eq!(exit_code_for_failures(true, false), ExitCode::FAILURE);
+        assert_eq!(exit_code_for_failures(false, true), ExitCode::FAILURE);
+        assert_eq!(exit_code_for_failures(true, true), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn cli_succeeds_without_failures() {
+        assert_eq!(exit_code_for_failures(false, false), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn validates_only_values_against_updater_registry() {
+        assert!(validate_only_modules(&["pip".to_owned(), "rustup".to_owned()]).is_ok());
+
+        let error = validate_only_modules(&[
+            "missing-z".to_owned(),
+            "pip".to_owned(),
+            "missing-a".to_owned(),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("missing-a, missing-z"));
+        assert!(error.contains("Доступные имена:"));
+        assert!(error.contains("vscode-extensions"));
+    }
 }

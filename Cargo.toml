@@ -1,6 +1,6 @@
 [package]
 name = "update_all_modules"
-version = "0.4.14"
+version = "0.5.0"
 edition = "2024"
 build = "build.rs"
 
@@ -8,35 +8,37 @@ build = "build.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 comfy-table = "8"
+dirs = "6"
 egui = "0.36"
-encoding_rs = "0.8"
-is_elevated = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 thiserror = "2"
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation", 
-    "Win32_System_Console", 
-    "Win32_UI_Shell", 
-    "Win32_UI_WindowsAndMessaging"
-] }
 
 [target.'cfg(windows)'.dependencies]
+encoding_rs = "0.8"
 eframe = { version = "0.36", default-features = false, features = [
     "accesskit",
     "default_fonts",
     "glow",
     "links",
 ] }
+is_elevated = "0.1"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(not(windows))'.dependencies]
 eframe = "0.36"
 
 [build-dependencies]
-# Подключаем vergen и активируем нужные фичи для сбора информации
-vergen-gitcl = { version = "10", features = ["build", "cargo", "rustc", "si"] }
+vergen-gitcl = "10"
 anyhow = "1.0"
 
 [lints.rust]

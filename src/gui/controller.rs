@@ -138,10 +138,9 @@ impl GuiApp {
         }
 
         cancellation.cancel();
-        self.status_line =
-            String::from("Отмена запрошена: ожидается завершение активных модулей...");
+        self.status_line = String::from("Отмена запрошена: завершаются активные процессы...");
         self.append_log(String::from(
-            "[system] Отмена запрошена; новые модули запускаться не будут",
+            "[system] Отмена запрошена; активные процессы завершаются, новые модули запускаться не будут",
         ));
     }
 
@@ -472,7 +471,10 @@ mod tests {
         assert_eq!(app.modules.len(), 1);
         assert_eq!(app.modules[0].name, "windows-update");
         assert!(app.modules[0].installed);
-        assert!(matches!(app.modules[0].status, ModuleStatus::UpdatesAvailable(1)));
+        assert!(matches!(
+            app.modules[0].status,
+            ModuleStatus::UpdatesAvailable(1)
+        ));
     }
 
     #[test]

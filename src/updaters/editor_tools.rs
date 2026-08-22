@@ -4,6 +4,7 @@ use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{UpdaterError, capture_command, find_command};
 use crate::updaters::common::{ensure_success, stream_checked};
+use crate::updaters::http_client::http_client;
 use reqwest::blocking::Client;
 use semver::Version;
 use serde_json::{Value, json};
@@ -76,11 +77,11 @@ fn fetch_marketplace_versions(
         .collect::<Vec<_>>();
     extension_ids.sort_unstable();
 
-    let client = Client::builder().http1_only().build()?;
+    let client = http_client()?;
     let mut versions = HashMap::new();
     for batch in extension_ids.chunks(MARKETPLACE_BATCH_SIZE) {
         versions.extend(fetch_marketplace_batch(
-            &client,
+            client,
             batch,
             MARKETPLACE_LATEST_FLAGS,
         )?);
@@ -93,7 +94,7 @@ fn fetch_marketplace_versions(
         .collect::<Vec<_>>();
     for extension_id in &missing_ids {
         versions.extend(fetch_marketplace_batch(
-            &client,
+            client,
             std::slice::from_ref(extension_id),
             MARKETPLACE_HISTORY_FLAGS,
         )?);
@@ -136,7 +137,7 @@ fn fetch_marketplace_batch(
 fn fetch_open_vsx_versions(
     installed: &[InstalledExtension],
 ) -> Result<HashMap<String, String>, UpdaterError> {
-    let client = Client::new();
+    let client = http_client()?;
     let mut versions = HashMap::new();
 
     for extension in installed {

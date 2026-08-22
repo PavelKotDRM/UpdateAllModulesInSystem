@@ -2,17 +2,17 @@
 
 mod discovery;
 
+pub use crate::updater::UpdateCancellation;
 pub use discovery::{SelectionFilter, discover_modules, discover_modules_with_progress};
 
 use crate::model::{ModuleKind, ModuleSnapshot};
 use crate::system;
-use crate::updater::{Updater, UpdaterError};
+use crate::updater::{Updater, UpdaterError, with_update_cancellation};
 use crate::updaters::registry;
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
     mpsc::{self, Sender},
 };
 use std::thread;
@@ -44,27 +44,6 @@ impl UpdatePhase {
             Self::Failed => "Ошибка",
             Self::Cancelled => "Отменено",
         }
-    }
-}
-
-/// Потокобезопасный сигнал кооперативной отмены обновления.
-///
-/// Отмена останавливает выдачу новых заданий, но не прерывает внешние процессы,
-/// которые уже выполняются.
-#[derive(Clone, Default)]
-pub struct UpdateCancellation {
-    cancelled: Arc<AtomicBool>,
-}
-
-impl UpdateCancellation {
-    /// Запрашивает остановку очереди после завершения уже запущенных модулей.
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-    }
-
-    /// Возвращает `true`, если пользователь запросил отмену.
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
     }
 }
 
@@ -170,8 +149,9 @@ pub fn run_updates_with_progress(
 /// Запускает обновление с возможностью кооперативно остановить очередь заданий.
 ///
 /// После [`UpdateCancellation::cancel`] задания, ещё не взятые рабочими потоками,
-/// получают фазу [`UpdatePhase::Cancelled`]. Уже запущенные задания завершаются
-/// штатно. Результаты возвращаются в порядке исходного списка модулей.
+/// получают фазу [`UpdatePhase::Cancelled`], а дочерние процессы выполняемых
+/// заданий завершаются принудительно. Результаты возвращаются в порядке
+/// исходного списка модулей.
 ///
 /// # Panics
 ///
@@ -274,6 +254,7 @@ pub fn run_updates_with_progress_cancellable(
                     force_yes,
                     &serial_sender,
                     serial_progress_sender.clone(),
+                    &serial_cancellation,
                 ));
             }
             completed
@@ -314,6 +295,7 @@ fn run_update_job(
     force_yes: bool,
     log_sender: &Sender<String>,
     progress_sender: Option<Sender<ModuleUpdateProgress>>,
+    cancellation: &UpdateCancellation,
 ) -> (usize, String, Result<(), UpdaterError>) {
     let UpdateJob {
         index,
@@ -344,28 +326,35 @@ fn run_update_job(
         }
     });
 
-    let outcome = updater
-        .apply_updates(force_yes, &selected_updates, &module_log_tx)
-        .and_then(|()| verify_selected_updates_applied(&*updater, &selected_updates));
+    let outcome = with_update_cancellation(cancellation.clone(), || {
+        updater
+            .apply_updates(force_yes, &selected_updates, &module_log_tx)
+            .and_then(|()| verify_selected_updates_applied(&*updater, &selected_updates))
+    });
     drop(module_log_tx);
     let _ = forward_handle.join();
 
-    match &outcome {
-        Ok(()) => {
-            send_progress(&progress_sender, &module_name, UpdatePhase::Completed);
-            let _ = log_sender.send(format_module_log(&module_name, "Этап: завершено"));
-        }
-        Err(error) => {
-            send_progress_with_detail(
-                &progress_sender,
-                &module_name,
-                UpdatePhase::Failed,
-                error.to_string(),
-            );
-            let _ = log_sender.send(format_module_log(
-                &module_name,
-                format!("Этап: ошибка: {error}"),
-            ));
+    if cancellation.is_cancelled() {
+        send_progress(&progress_sender, &module_name, UpdatePhase::Cancelled);
+        let _ = log_sender.send(format_module_log(&module_name, "Этап: отменено"));
+    } else {
+        match &outcome {
+            Ok(()) => {
+                send_progress(&progress_sender, &module_name, UpdatePhase::Completed);
+                let _ = log_sender.send(format_module_log(&module_name, "Этап: завершено"));
+            }
+            Err(error) => {
+                send_progress_with_detail(
+                    &progress_sender,
+                    &module_name,
+                    UpdatePhase::Failed,
+                    error.to_string(),
+                );
+                let _ = log_sender.send(format_module_log(
+                    &module_name,
+                    format!("Этап: ошибка: {error}"),
+                ));
+            }
         }
     }
 
@@ -449,6 +438,7 @@ fn run_parallel_update_jobs(
                     force_yes,
                     &worker_log_sender,
                     worker_progress_sender.clone(),
+                    &worker_cancellation,
                 );
                 let _ = result_sender.send(result);
             }
@@ -750,7 +740,13 @@ mod tests {
         let (log_tx, _log_rx) = std::sync::mpsc::channel::<String>();
         let (progress_tx, progress_rx) = std::sync::mpsc::channel::<ModuleUpdateProgress>();
 
-        let (_, module_name, result) = run_update_job(job, true, &log_tx, Some(progress_tx));
+        let (_, module_name, result) = run_update_job(
+            job,
+            true,
+            &log_tx,
+            Some(progress_tx),
+            &UpdateCancellation::default(),
+        );
 
         assert_eq!(module_name, "fake");
         assert!(result.is_ok());
@@ -780,7 +776,13 @@ mod tests {
         let (log_tx, _log_rx) = std::sync::mpsc::channel::<String>();
         let (progress_tx, progress_rx) = std::sync::mpsc::channel::<ModuleUpdateProgress>();
 
-        let (_, _, result) = run_update_job(job, true, &log_tx, Some(progress_tx));
+        let (_, _, result) = run_update_job(
+            job,
+            true,
+            &log_tx,
+            Some(progress_tx),
+            &UpdateCancellation::default(),
+        );
 
         assert!(result.unwrap_err().to_string().contains("не подтверждено"));
         let phases = progress_rx

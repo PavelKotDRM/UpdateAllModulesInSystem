@@ -3,8 +3,12 @@
 use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{UpdaterError, capture_command, stream_command};
-use crate::updaters::common::{heuristic_check, stream_checked, stream_checked_refs};
-use crate::updaters::parsers::{parse_apt_updates, parse_flatpak_updates, parse_pkcon_updates};
+use crate::updaters::common::{
+    ensure_success, heuristic_check, stream_checked, stream_checked_refs,
+};
+use crate::updaters::parsers::{
+    parse_apt_updates, parse_brew_updates, parse_flatpak_updates, parse_pkcon_updates,
+};
 use std::sync::mpsc::Sender;
 
 pub(super) fn apt_installed() -> bool {
@@ -321,7 +325,9 @@ pub(super) fn brew_installed() -> bool {
 }
 
 pub(super) fn brew_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    heuristic_check("brew", &["outdated"], "brew")
+    let output = capture_command("brew", &["outdated".to_owned(), "--json=v2".to_owned()])?;
+    ensure_success("brew", &output)?;
+    parse_brew_updates(&output.stdout)
 }
 
 pub(super) fn brew_apply_updates(
@@ -334,7 +340,39 @@ pub(super) fn brew_apply_updates(
 
 #[cfg(test)]
 mod tests {
-    use super::should_enable_apt;
+    use super::{brew_check_updates, should_enable_apt};
+    use crate::updater::{CommandExecutor, CommandOutput, UpdaterError, with_command_executor};
+    use std::sync::{Arc, Mutex, mpsc::Sender};
+
+    type CommandCalls = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+    struct FakeExecutor {
+        calls: CommandCalls,
+    }
+
+    impl CommandExecutor for FakeExecutor {
+        fn capture(&self, program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((program.to_owned(), args.to_vec()));
+            Ok(CommandOutput {
+                stdout: r#"{"formulae":[{"name":"git","installed_versions":["2.45.0"],"current_version":"2.46.0"}],"casks":[]}"#.to_owned(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                success: true,
+            })
+        }
+
+        fn stream(
+            &self,
+            _program: &str,
+            _args: &[String],
+            _log_sender: &Sender<String>,
+        ) -> Result<CommandOutput, UpdaterError> {
+            unreachable!("brew update check only captures output")
+        }
+    }
 
     #[test]
     fn apt_is_only_enabled_as_fallback_for_apt_get() {
@@ -342,5 +380,25 @@ mod tests {
         assert!(!should_enable_apt(true, true));
         assert!(!should_enable_apt(false, true));
         assert!(!should_enable_apt(false, false));
+    }
+
+    #[test]
+    fn brew_check_uses_json_through_substituted_executor() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let executor = FakeExecutor {
+            calls: Arc::clone(&calls),
+        };
+
+        let updates = with_command_executor(Arc::new(executor), brew_check_updates).unwrap();
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "brew:git");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(
+                "brew".to_owned(),
+                vec!["outdated".to_owned(), "--json=v2".to_owned()],
+            )]
+        );
     }
 }

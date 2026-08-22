@@ -5,15 +5,140 @@ mod parsing;
 pub use parsing::heuristic_parse_updates;
 
 use crate::model::PackageUpdate;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::io::{self, Read};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::Sender;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc::Sender,
+};
 use std::thread;
 use thiserror::Error;
 
 #[cfg(target_os = "windows")]
 use encoding_rs::{IBM866, WINDOWS_1251};
+
+thread_local! {
+    static UPDATE_CANCELLATION: RefCell<Option<UpdateCancellation>> = const { RefCell::new(None) };
+    static COMMAND_EXECUTOR: RefCell<Option<Arc<dyn CommandExecutor>>> = const { RefCell::new(None) };
+}
+
+#[derive(Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    active_processes: Mutex<HashSet<u32>>,
+}
+
+/// Потокобезопасный сигнал отмены очереди и активных дочерних процессов.
+#[derive(Clone, Default)]
+pub struct UpdateCancellation {
+    state: Arc<CancellationState>,
+}
+
+impl UpdateCancellation {
+    /// Запрашивает остановку очереди и завершает зарегистрированные процессы.
+    pub fn cancel(&self) {
+        self.state.cancelled.store(true, Ordering::Release);
+        let active_processes = self
+            .state
+            .active_processes
+            .lock()
+            .expect("active processes mutex poisoned");
+        for &process_id in active_processes.iter() {
+            terminate_process(process_id);
+        }
+    }
+
+    /// Возвращает `true`, если пользователь запросил отмену.
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    fn register_process(&self, process_id: u32) -> ProcessRegistration {
+        let mut active_processes = self
+            .state
+            .active_processes
+            .lock()
+            .expect("active processes mutex poisoned");
+        if self.is_cancelled() {
+            terminate_process(process_id);
+        } else {
+            active_processes.insert(process_id);
+        }
+        ProcessRegistration {
+            cancellation: self.clone(),
+            process_id,
+        }
+    }
+}
+
+struct ProcessRegistration {
+    cancellation: UpdateCancellation,
+    process_id: u32,
+}
+
+impl Drop for ProcessRegistration {
+    fn drop(&mut self) {
+        self.cancellation
+            .state
+            .active_processes
+            .lock()
+            .expect("active processes mutex poisoned")
+            .remove(&self.process_id);
+    }
+}
+
+/// Выполняет операцию, связывая запускаемые ею процессы с сигналом отмены.
+pub fn with_update_cancellation<T>(
+    cancellation: UpdateCancellation,
+    operation: impl FnOnce() -> T,
+) -> T {
+    UPDATE_CANCELLATION.with(|active| {
+        let previous = active.replace(Some(cancellation));
+        let result = operation();
+        active.replace(previous);
+        result
+    })
+}
+
+fn register_active_process(process_id: u32) -> Option<ProcessRegistration> {
+    UPDATE_CANCELLATION.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .map(|cancellation| cancellation.register_process(process_id))
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_process(process_id: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, process_id) };
+    if !handle.is_null() {
+        unsafe {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn terminate_process(process_id: u32) {
+    unsafe extern "C" {
+        fn kill(process_id: i32, signal: i32) -> i32;
+    }
+
+    const SIGTERM: i32 = 15;
+    let _ = unsafe { kill(process_id as i32, SIGTERM) };
+}
+
+#[cfg(not(any(target_os = "windows", unix)))]
+fn terminate_process(_process_id: u32) {}
 
 /// Трейт, описывающий жизненный цикл обновлятора конкретного менеджера пакетов.
 pub trait Updater: Send + Sync {
@@ -90,6 +215,37 @@ pub struct CommandOutput {
     pub success: bool,
 }
 
+/// Исполнитель внешних команд, подменяемый в тестах адаптеров.
+pub(crate) trait CommandExecutor: Send + Sync {
+    /// Выполняет команду с полным захватом вывода.
+    fn capture(&self, program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError>;
+
+    /// Выполняет команду с потоковой передачей вывода.
+    fn stream(
+        &self,
+        program: &str,
+        args: &[String],
+        log_sender: &Sender<String>,
+    ) -> Result<CommandOutput, UpdaterError>;
+}
+
+#[cfg(test)]
+pub(crate) fn with_command_executor<T>(
+    executor: Arc<dyn CommandExecutor>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    COMMAND_EXECUTOR.with(|active| {
+        let previous = active.replace(Some(executor));
+        let result = operation();
+        active.replace(previous);
+        result
+    })
+}
+
+fn command_executor() -> Option<Arc<dyn CommandExecutor>> {
+    COMMAND_EXECUTOR.with(|active| active.borrow().clone())
+}
+
 impl CommandOutput {
     /// Объединяет непустые `stdout` и `stderr`, сохраняя их порядок.
     pub fn merged_text(&self) -> String {
@@ -162,15 +318,31 @@ pub fn find_command(program: &str) -> Option<String> {
 /// которые сообщают о доступных обновлениях специальным кодом выхода.
 ///
 /// # Errors
-/// Возвращает [`UpdaterError::SpawnError`], если процесс не удалось запустить.
+/// Возвращает [`UpdaterError`], если процесс не удалось запустить или дождаться
+/// его завершения.
 pub fn capture_command(program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
+    if let Some(executor) = command_executor() {
+        return executor.capture(program, args);
+    }
+
+    capture_system_command(program, args)
+}
+
+fn capture_system_command(program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
     let executable = find_command(program).unwrap_or_else(|| program.to_owned());
-    let output = Command::new(executable)
+    let child = Command::new(executable)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|source| UpdaterError::SpawnError {
+            program: program.to_owned(),
+            source,
+        })?;
+    let _registration = register_active_process(child.id());
+    let output = child
+        .wait_with_output()
+        .map_err(|source| UpdaterError::StreamError {
             program: program.to_owned(),
             source,
         })?;
@@ -197,6 +369,18 @@ pub fn stream_command(
     args: &[String],
     log_sender: &Sender<String>,
 ) -> Result<CommandOutput, UpdaterError> {
+    if let Some(executor) = command_executor() {
+        return executor.stream(program, args, log_sender);
+    }
+
+    stream_system_command(program, args, log_sender)
+}
+
+fn stream_system_command(
+    program: &str,
+    args: &[String],
+    log_sender: &Sender<String>,
+) -> Result<CommandOutput, UpdaterError> {
     let executable = find_command(program).unwrap_or_else(|| program.to_owned());
     let mut child = Command::new(executable)
         .args(args)
@@ -207,6 +391,7 @@ pub fn stream_command(
             program: program.to_owned(),
             source,
         })?;
+    let _registration = register_active_process(child.id());
 
     let stdout = child
         .stdout
@@ -326,6 +511,34 @@ pub fn decode_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    type CommandCalls = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+    struct FakeCommandExecutor {
+        output: CommandOutput,
+        calls: CommandCalls,
+    }
+
+    impl CommandExecutor for FakeCommandExecutor {
+        fn capture(&self, program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((program.to_owned(), args.to_vec()));
+            Ok(self.output.clone())
+        }
+
+        fn stream(
+            &self,
+            program: &str,
+            args: &[String],
+            log_sender: &Sender<String>,
+        ) -> Result<CommandOutput, UpdaterError> {
+            let _ = log_sender.send("fake output".to_owned());
+            self.capture(program, args)
+        }
+    }
 
     #[test]
     fn command_output_merges_streams_correctly() {
@@ -352,6 +565,37 @@ mod tests {
             success: false,
         };
         assert_eq!(only_stderr.merged_text(), "err");
+    }
+
+    #[test]
+    fn command_helpers_use_substituted_executor() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let executor = FakeCommandExecutor {
+            output: CommandOutput {
+                stdout: "captured".to_owned(),
+                stderr: String::new(),
+                exit_code: Some(0),
+                success: true,
+            },
+            calls: Arc::clone(&calls),
+        };
+        let (log_sender, log_receiver) = std::sync::mpsc::channel();
+
+        with_command_executor(Arc::new(executor), || {
+            let captured = capture_command("tool", &["check".to_owned()]).unwrap();
+            let streamed = stream_command("tool", &["update".to_owned()], &log_sender).unwrap();
+            assert_eq!(captured.stdout, "captured");
+            assert!(streamed.success);
+        });
+
+        assert_eq!(log_receiver.recv().unwrap(), "fake output");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                ("tool".to_owned(), vec!["check".to_owned()]),
+                ("tool".to_owned(), vec!["update".to_owned()]),
+            ]
+        );
     }
 
     #[test]
@@ -398,5 +642,54 @@ bar 2.0 3.0\n\
         assert_eq!(updates[0].current_version, "1.0");
         assert_eq!(updates[0].available_version, "1.2");
         assert_eq!(updates[1].name, "apt:bar");
+    }
+
+    #[test]
+    fn cancellation_terminates_active_process() {
+        let cancellation = UpdateCancellation::default();
+        let worker_cancellation = cancellation.clone();
+        let handle = thread::spawn(move || {
+            with_update_cancellation(worker_cancellation, || {
+                #[cfg(target_os = "windows")]
+                let (program, args) = (
+                    if find_command("powershell").is_some() {
+                        "powershell"
+                    } else {
+                        "pwsh"
+                    },
+                    vec![
+                        "-NoProfile".to_owned(),
+                        "-Command".to_owned(),
+                        "Start-Sleep -Seconds 30".to_owned(),
+                    ],
+                );
+                #[cfg(unix)]
+                let (program, args) = ("sleep", vec!["30".to_owned()]);
+                #[cfg(not(any(target_os = "windows", unix)))]
+                let (program, args) = ("echo", vec!["unsupported".to_owned()]);
+
+                capture_command(program, &args)
+            })
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cancellation
+            .state
+            .active_processes
+            .lock()
+            .expect("active processes mutex poisoned")
+            .is_empty()
+        {
+            assert!(Instant::now() < deadline, "process was not registered");
+            thread::yield_now();
+        }
+
+        cancellation.cancel();
+        let output = handle
+            .join()
+            .expect("command thread should not panic")
+            .expect("terminated command should still return its output");
+        assert!(!output.success);
+        assert!(cancellation.is_cancelled());
     }
 }

@@ -43,4 +43,3 @@ pub(super) fn split_module_log(message: &str) -> (String, String) {
 
     ("system".to_owned(), message.to_owned())
 }
-

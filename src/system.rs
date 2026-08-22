@@ -2,7 +2,12 @@
 
 use crate::updater::command_exists;
 use anyhow::{Context, Result, bail};
+use std::fs;
 use std::path::Path;
+
+const ELEVATION_STATE_PREFIX: &str = "update_all_modules_scan_";
+const ELEVATION_STATE_SUFFIX: &str = ".json";
+const ELEVATION_READY_PREFIX: &str = "update_all_modules_elevated_";
 
 /// Проверяет, запущен ли процесс с правами администратора или `root`.
 pub fn is_admin() -> bool {
@@ -33,6 +38,70 @@ pub fn should_warn_about_elevation() -> bool {
     !is_admin()
 }
 
+/// Проверяет путь одноразового снимка состояния перед повышением прав.
+///
+/// # Errors
+/// Возвращает ошибку для файла вне системного временного каталога, ссылки,
+/// каталога или имени, не соответствующего формату приложения.
+pub fn validate_elevation_state_file(path: &Path) -> Result<()> {
+    validate_elevation_file(path, ELEVATION_STATE_PREFIX, ELEVATION_STATE_SUFFIX, false)
+}
+
+/// Проверяет путь одноразового маркера успешного запуска elevated GUI.
+///
+/// # Errors
+/// Возвращает ошибку для файла вне системного временного каталога, ссылки,
+/// каталога, непустого файла или неожиданного имени.
+pub fn validate_elevation_ready_file(path: &Path) -> Result<()> {
+    validate_elevation_file(path, ELEVATION_READY_PREFIX, "", true)
+}
+
+fn validate_elevation_file(
+    path: &Path,
+    prefix: &str,
+    suffix: &str,
+    must_be_empty: bool,
+) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("служебный файл не имеет родительского каталога")?;
+    let expected_parent = fs::canonicalize(std::env::temp_dir())
+        .context("не удалось определить системный временный каталог")?;
+    let actual_parent =
+        fs::canonicalize(parent).context("не удалось проверить каталог служебного файла")?;
+    if actual_parent != expected_parent {
+        bail!("служебный файл находится вне системного временного каталога");
+    }
+
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("некорректное имя служебного файла")?;
+    let identity = name
+        .strip_prefix(prefix)
+        .and_then(|name| name.strip_suffix(suffix))
+        .context("неожиданное имя служебного файла")?;
+    let (process_id, nonce) = identity
+        .split_once('_')
+        .filter(|(_, nonce)| !nonce.contains('_'))
+        .context("некорректный идентификатор служебного файла")?;
+    process_id
+        .parse::<u32>()
+        .context("некорректный PID в имени служебного файла")?;
+    nonce
+        .parse::<u128>()
+        .context("некорректный nonce в имени служебного файла")?;
+
+    let metadata = fs::symlink_metadata(path).context("служебный файл не существует")?;
+    if !metadata.file_type().is_file() {
+        bail!("служебный путь не является обычным файлом");
+    }
+    if must_be_empty && metadata.len() != 0 {
+        bail!("служебный маркер уже был использован");
+    }
+    Ok(())
+}
+
 /// Повторно запускает текущий процесс с повышенными правами для полного
 /// повторного сканирования.
 ///
@@ -47,6 +116,8 @@ pub fn restart_elevated(module_names: &[String], elevation_state_file: &Path) ->
     if module_names.is_empty() {
         bail!("не указаны модули для повторного сканирования");
     }
+
+    validate_elevation_state_file(elevation_state_file)?;
 
     restart_elevated_impl(module_names, elevation_state_file)
 }
@@ -113,7 +184,9 @@ fn elevated_arguments(elevation_state_file: &Path) -> String {
         arguments.push("--gui".to_owned());
     }
     arguments.push("--elevation-state-file".to_owned());
-    arguments.push(quote_windows_argument(&elevation_state_file.to_string_lossy()));
+    arguments.push(quote_windows_argument(
+        &elevation_state_file.to_string_lossy(),
+    ));
     arguments.join(" ")
 }
 
@@ -145,7 +218,7 @@ fn quote_windows_argument(argument: &str) -> String {
 
 #[cfg(target_os = "linux")]
 fn restart_elevated_impl(module_names: &[String], elevation_state_file: &Path) -> Result<()> {
-    use std::fs;
+    use std::fs::OpenOptions;
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -165,7 +238,11 @@ fn restart_elevated_impl(module_names: &[String], elevation_state_file: &Path) -
         std::process::id(),
         marker_id
     ));
-    fs::write(&ready_file, []).context("не удалось создать маркер запуска GUI")?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&ready_file)
+        .context("не удалось создать маркер запуска GUI")?;
 
     let mut command = Command::new("pkexec");
     command.arg("env");
@@ -270,12 +347,17 @@ pub fn hide_windows_console_if_needed(gui_mode: bool) {
     }
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
 mod tests {
-    use super::quote_windows_argument;
+    use super::{validate_elevation_ready_file, validate_elevation_state_file};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn quotes_windows_arguments_for_shell_execute() {
+        use super::quote_windows_argument;
+
         assert_eq!(quote_windows_argument(""), "\"\"");
         assert_eq!(quote_windows_argument("two words"), "\"two words\"");
         assert_eq!(
@@ -286,5 +368,47 @@ mod tests {
             quote_windows_argument(r"C:\Program Files\"),
             r#""C:\Program Files\\""#
         );
+    }
+
+    #[test]
+    fn validates_only_expected_one_time_elevation_files() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp = std::env::temp_dir();
+        let state = temp.join(format!(
+            "update_all_modules_scan_{}_{nonce}.json",
+            std::process::id()
+        ));
+        let ready = temp.join(format!(
+            "update_all_modules_elevated_{}_{nonce}",
+            std::process::id()
+        ));
+        let invalid_name = temp.join(format!("unexpected_{nonce}.json"));
+        let nested_directory = temp.join(format!("update-all-modules-path-test-{nonce}"));
+        let nested_state = nested_directory.join(format!(
+            "update_all_modules_scan_{}_{nonce}.json",
+            std::process::id()
+        ));
+
+        fs::write(&state, "{}").unwrap();
+        fs::write(&ready, []).unwrap();
+        fs::write(&invalid_name, "{}").unwrap();
+        fs::create_dir(&nested_directory).unwrap();
+        fs::write(&nested_state, "{}").unwrap();
+
+        assert!(validate_elevation_state_file(&state).is_ok());
+        assert!(validate_elevation_ready_file(&ready).is_ok());
+        assert!(validate_elevation_state_file(&invalid_name).is_err());
+        assert!(validate_elevation_state_file(&nested_state).is_err());
+
+        fs::write(&ready, "used").unwrap();
+        assert!(validate_elevation_ready_file(&ready).is_err());
+
+        fs::remove_file(state).unwrap();
+        fs::remove_file(ready).unwrap();
+        fs::remove_file(invalid_name).unwrap();
+        fs::remove_dir_all(nested_directory).unwrap();
     }
 }

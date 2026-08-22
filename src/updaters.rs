@@ -5,6 +5,7 @@ use crate::model::ModuleKind;
 mod common;
 mod core;
 mod editor_tools;
+mod http_client;
 mod node_tools;
 mod parsers;
 mod python_tools;
@@ -253,6 +254,11 @@ const REGISTRY_SPECS: &[UpdaterSpec] = &[
         apply: apply_uv_updates,
     },
 ];
+
+/// Возвращает имена всех зарегистрированных обновляторов в стабильном порядке.
+pub fn updater_names() -> impl Iterator<Item = &'static str> {
+    REGISTRY_SPECS.iter().map(|spec| spec.name)
+}
 
 /// Создаёт дескрипторы обновляторов в стабильном порядке [`REGISTRY_SPECS`].
 pub fn registry() -> Vec<UpdaterDescriptor> {

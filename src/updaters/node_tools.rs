@@ -4,7 +4,7 @@ use crate::model::PackageUpdate;
 use crate::system;
 use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command, stream_command};
 use crate::updaters::common::{ensure_success, stream_checked};
-use reqwest::blocking::Client;
+use crate::updaters::http_client::http_client;
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io;
@@ -143,7 +143,7 @@ pub(super) fn node_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
         UpdaterError::Message("node: не удалось определить текущую версию".to_owned())
     })?;
 
-    let releases: Value = Client::new()
+    let releases: Value = http_client()?
         .get(NODE_RELEASE_INDEX_URL)
         .send()?
         .error_for_status()?
@@ -362,7 +362,7 @@ fn node_msi_url(version: &str, architecture: &str) -> String {
 }
 
 fn download_file(url: &str, path: &Path) -> Result<(), UpdaterError> {
-    let mut response = Client::new().get(url).send()?.error_for_status()?;
+    let mut response = http_client()?.get(url).send()?.error_for_status()?;
     let mut file = File::create(path).map_err(|error| {
         UpdaterError::Message(format!(
             "node: не удалось создать {}: {error}",
