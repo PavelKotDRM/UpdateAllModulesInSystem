@@ -12,12 +12,15 @@ pub fn stable_native_options() -> eframe::NativeOptions {
         desired_maximum_frame_latency: Some(2),
     };
 
-    let mut options = eframe::NativeOptions {
+    let options = eframe::NativeOptions {
         dithering: false,
         #[cfg(not(target_os = "windows"))]
         wgpu_options: eframe::WgpuConfiguration::default().with_surface_config(surface),
         ..Default::default()
     };
+
+    #[cfg(target_os = "windows")]
+    let mut options = options;
 
     #[cfg(target_os = "windows")]
     {

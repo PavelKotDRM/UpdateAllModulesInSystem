@@ -217,7 +217,7 @@ fn quote_windows_argument(argument: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn restart_elevated_impl(module_names: &[String], elevation_state_file: &Path) -> Result<()> {
+fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) -> Result<()> {
     use std::fs::OpenOptions;
     use std::process::{Command, Stdio};
     use std::thread;
@@ -331,18 +331,16 @@ pub fn command_available(program: &str) -> bool {
 ///
 /// На остальных платформах функция ничего не делает.
 pub fn hide_windows_console_if_needed(gui_mode: bool) {
-    if !cfg!(target_os = "windows") || !gui_mode {
-        return;
-    }
+    if cfg!(target_os = "windows") && gui_mode {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows_sys::Win32::System::Console::GetConsoleWindow;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
 
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::System::Console::GetConsoleWindow;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
-
-        let window = GetConsoleWindow();
-        if !window.is_null() {
-            ShowWindow(window, SW_HIDE);
+            let window = GetConsoleWindow();
+            if !window.is_null() {
+                ShowWindow(window, SW_HIDE);
+            }
         }
     }
 }
