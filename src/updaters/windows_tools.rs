@@ -168,10 +168,18 @@ pub(super) fn winget_apply_updates(
 
 fn winget_failure_reason(output: &CommandOutput, package_id: &str) -> String {
     let merged = output.merged_text();
-    if merged
-        .to_ascii_lowercase()
-        .contains("install technology is different")
+    let merged_lower = merged.to_ascii_lowercase();
+
+    if output.exit_code == Some(0x80072ee2_u32 as i32)
+        || merged_lower.contains("0x80072ee2")
+        || merged_lower.contains("internetopenurl() failed")
     {
+        return format!(
+            "истекло время ожидания загрузки из Интернета (0x80072EE2); проверьте соединение, прокси или доступ к адресу загрузки и повторите `winget upgrade --id {package_id} --exact`"
+        );
+    }
+
+    if merged_lower.contains("install technology is different") {
         return format!(
             "технология установки новой версии отличается от установленной; выполните `winget uninstall --id {package_id} --exact`, затем `winget install --id {package_id} --exact`"
         );
@@ -416,5 +424,22 @@ mod tests {
         assert!(message.contains("доступно обновлений: 2"));
         assert!(message.contains("Центр обновления Windows"));
         assert!(message.contains("вручную"));
+    }
+
+    #[test]
+    fn winget_failure_explains_internet_timeout() {
+        let output = CommandOutput {
+            stdout: "Downloading https://github.com/Kitware/CMake/releases/download/v4.4.3/cmake-4.4.3-windows-x86_64.msi\nAn unexpected error occurred while executing the command:\nInternetOpenUrl() failed.\n0x80072ee2 : unknown error".to_owned(),
+            stderr: String::new(),
+            exit_code: Some(0x80072ee2_u32 as i32),
+            success: false,
+        };
+
+        let reason = winget_failure_reason(&output, "Kitware.CMake");
+
+        assert!(reason.contains("истекло время ожидания"));
+        assert!(reason.contains("прокси"));
+        assert!(reason.contains("winget upgrade --id Kitware.CMake --exact"));
+        assert!(!reason.contains("unknown error"));
     }
 }
