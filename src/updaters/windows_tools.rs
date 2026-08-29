@@ -52,7 +52,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $session = New-Object -ComObject Microsoft.Update.Session
 $searcher = $session.CreateUpdateSearcher()
-$result = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+$result = $searcher.Search("IsInstalled=0 and IsHidden=0")
 if ($result.Updates.Count -eq 0) { Write-Output '[]'; exit 0 }
 $items = @()
 for ($i = 0; $i -lt $result.Updates.Count; $i++) {
