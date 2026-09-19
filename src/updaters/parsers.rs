@@ -3,6 +3,7 @@
 use crate::model::PackageUpdate;
 use crate::updater::UpdaterError;
 use serde::Deserialize;
+use std::cmp::Ordering;
 
 /// Разбирает как `apt list --upgradable`, так и симуляцию APT-RPM.
 ///
@@ -199,6 +200,7 @@ pub(super) fn parse_winget_updates(text: &str) -> Vec<PackageUpdate> {
                 || !is_single_token(package_id)
                 || !is_single_token(current)
                 || !is_single_token(available)
+                || !is_winget_upgrade(current, available)
             {
                 return None;
             }
@@ -210,6 +212,67 @@ pub(super) fn parse_winget_updates(text: &str) -> Vec<PackageUpdate> {
             ))
         })
         .collect()
+}
+
+fn is_winget_upgrade(current: &str, available: &str) -> bool {
+    if current.eq_ignore_ascii_case(available) {
+        return false;
+    }
+
+    match (parse_semver(current), parse_semver(available)) {
+        (Some(current), Some(available)) => available > current,
+        _ => match (numeric_version_key(current), numeric_version_key(available)) {
+            (Some(current_key), Some(available_key))
+                if version_pattern(current) == version_pattern(available) =>
+            {
+                available_key.cmp(&current_key) == Ordering::Greater
+            }
+            _ => true,
+        },
+    }
+}
+
+fn parse_semver(version: &str) -> Option<semver::Version> {
+    semver::Version::parse(version).ok()
+}
+
+fn numeric_version_key(version: &str) -> Option<Vec<u64>> {
+    let mut key = Vec::new();
+    let mut digits = String::new();
+
+    for character in version.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if !digits.is_empty() {
+            key.push(digits.parse().ok()?);
+            digits.clear();
+        }
+    }
+
+    if !digits.is_empty() {
+        key.push(digits.parse().ok()?);
+    }
+
+    (!key.is_empty()).then_some(key)
+}
+
+fn version_pattern(version: &str) -> String {
+    let mut pattern = String::new();
+    let mut in_digits = false;
+
+    for character in version.chars() {
+        if character.is_ascii_digit() {
+            if !in_digits {
+                pattern.push('#');
+                in_digits = true;
+            }
+        } else {
+            in_digits = false;
+            pattern.push(character.to_ascii_lowercase());
+        }
+    }
+
+    pattern
 }
 
 fn is_single_token(value: &str) -> bool {
@@ -469,6 +532,37 @@ Python 3.12      Python.Python.3.12    3.12.0      3.12.4\n\
         assert_eq!(updates[0].current_version, "2.45.0");
         assert_eq!(updates[0].available_version, "2.46.0");
         assert_eq!(updates[1].name, "winget:Python 3.12 | Python.Python.3.12");
+    }
+
+    #[test]
+    fn parse_winget_updates_ignores_matching_or_older_versions() {
+        let text = "\
+Name             Id                    Version       Available\n\
+----------------------------------------------------------------\n\
+Git              Git.Git               2.46.0        2.46.0\n\
+Unity 6000.6.2f1 Unity.Unity.6000      6000.6.2f1     6000.6.0f1\n\
+Python           Python.Python         3.12.0        3.12.4\n\
+";
+
+        let updates = parse_winget_updates(text);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "winget:Python | Python.Python");
+    }
+
+    #[test]
+    fn parse_winget_updates_accepts_unity_f_release_versions() {
+        let text = "\
+Name             Id                    Version       Available\n\
+----------------------------------------------------------------\n\
+Unity 6000.6.0f1 Unity.Unity.6000      6000.6.0f1     6000.6.2f1\n\
+";
+
+        let updates = parse_winget_updates(text);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].current_version, "6000.6.0f1");
+        assert_eq!(updates[0].available_version, "6000.6.2f1");
     }
 
     #[test]

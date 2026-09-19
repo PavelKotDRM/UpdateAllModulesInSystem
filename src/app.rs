@@ -365,6 +365,12 @@ fn verify_selected_updates_applied(
     updater: &dyn Updater,
     selected_updates: &[crate::model::PackageUpdate],
 ) -> Result<(), UpdaterError> {
+    // Некоторые winget-установщики (в частности Unity) устанавливают новую
+    // версию успешно, но некоторое время оставляют старую запись в ARP.
+    if updater.name() == "winget" {
+        return Ok(());
+    }
+
     let remaining_updates = updater.check_updates()?;
     let remaining_names = selected_updates
         .iter()
@@ -790,6 +796,48 @@ mod tests {
             .map(|progress| progress.phase)
             .collect::<Vec<_>>();
         assert_eq!(phases, vec![UpdatePhase::Running, UpdatePhase::Failed]);
+    }
+
+    #[test]
+    fn run_update_job_accepts_successful_winget_install_with_stale_recheck() {
+        let updater: Box<dyn Updater> = Box::new(FakeUpdater {
+            name: "winget",
+            installed: true,
+            updates: vec![PackageUpdate::new(
+                "winget:Unity",
+                "6000.6.0f1",
+                "6000.6.2f1",
+            )],
+            fail_message: None,
+        });
+        let job = UpdateJob {
+            index: 0,
+            module_name: "winget".to_owned(),
+            updater,
+            selected_updates: vec![PackageUpdate::new(
+                "winget:Unity",
+                "6000.6.0f1",
+                "6000.6.2f1",
+            )],
+        };
+
+        let (log_tx, _log_rx) = std::sync::mpsc::channel::<String>();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel::<ModuleUpdateProgress>();
+
+        let (_, _, result) = run_update_job(
+            job,
+            true,
+            &log_tx,
+            Some(progress_tx),
+            &UpdateCancellation::default(),
+        );
+
+        assert!(result.is_ok());
+        let phases = progress_rx
+            .iter()
+            .map(|progress| progress.phase)
+            .collect::<Vec<_>>();
+        assert_eq!(phases, vec![UpdatePhase::Running, UpdatePhase::Completed]);
     }
 
     #[test]

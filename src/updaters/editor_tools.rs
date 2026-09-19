@@ -309,12 +309,27 @@ fn apply_editor_extensions(
         return Ok(());
     }
 
+    let mut failed_updates = Vec::new();
     for update in selected_updates {
         let args = editor_cli_args(program, extension_install_args(update));
-        stream_checked(&command, &args, log_sender)?;
+        if let Err(error) = stream_checked(&command, &args, log_sender) {
+            let display_name = update.display_name();
+            let _ = log_sender.send(format!(
+                "{program}: расширение `{display_name}` не обновлено: {error}"
+            ));
+            failed_updates.push(format!("{display_name}: {error}"));
+        }
     }
 
-    Ok(())
+    if failed_updates.is_empty() {
+        Ok(())
+    } else {
+        Err(UpdaterError::Message(format!(
+            "{program}: не удалось обновить {} расширений: {}",
+            failed_updates.len(),
+            failed_updates.join(", ")
+        )))
+    }
 }
 
 fn extension_install_args(update: &PackageUpdate) -> Vec<String> {
