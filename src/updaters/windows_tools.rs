@@ -98,7 +98,52 @@ pub(super) fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError>
             "--accept-source-agreements".to_owned(),
         ],
     )?;
-    Ok(parse_winget_updates(&output.merged_text()))
+    let updates = parse_winget_updates(&output.merged_text());
+    let mut pending_updates = Vec::with_capacity(updates.len());
+    for update in updates {
+        if !winget_target_version_is_installed(&update)? {
+            pending_updates.push(update);
+        }
+    }
+    Ok(pending_updates)
+}
+
+fn winget_target_version_is_installed(update: &PackageUpdate) -> Result<bool, UpdaterError> {
+    let (display_name, _, _) = winget_target_from_update_name(&update.name);
+    if !display_name.contains(&update.current_version) {
+        return Ok(false);
+    }
+
+    let target_name = display_name.replacen(&update.current_version, &update.available_version, 1);
+    if target_name == display_name {
+        return Ok(false);
+    }
+
+    let output = capture_command(
+        "winget",
+        &[
+            "list".to_owned(),
+            "--name".to_owned(),
+            target_name.clone(),
+            "--exact".to_owned(),
+            "--accept-source-agreements".to_owned(),
+            "--disable-interactivity".to_owned(),
+        ],
+    )?;
+
+    Ok(output.success
+        && winget_list_contains_version(
+            &output.merged_text(),
+            &target_name,
+            &update.available_version,
+        ))
+}
+
+fn winget_list_contains_version(text: &str, package_name: &str, version: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix(package_name))
+        .any(|rest| rest.split_whitespace().any(|field| field == version))
 }
 
 pub(super) fn winget_apply_updates(
@@ -441,5 +486,24 @@ mod tests {
         assert!(reason.contains("прокси"));
         assert!(reason.contains("winget upgrade --id Kitware.CMake --exact"));
         assert!(!reason.contains("unknown error"));
+    }
+
+    #[test]
+    fn winget_list_detects_target_version_under_another_package_id() {
+        let text = "\
+Name             Id                Version       Source\n\
+------------------------------------------------------\n\
+Unity 6000.6.2f1 Unity.Unity.2020 6000.6.2f1     winget\n";
+
+        assert!(winget_list_contains_version(
+            text,
+            "Unity 6000.6.2f1",
+            "6000.6.2f1"
+        ));
+        assert!(!winget_list_contains_version(
+            text,
+            "Unity 6000.6.0f1",
+            "6000.6.0f1"
+        ));
     }
 }
