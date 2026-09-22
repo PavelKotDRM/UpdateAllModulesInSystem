@@ -8,7 +8,7 @@ build = "build.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 comfy-table = "8"
-dirs = "6"
+dirs = "7"
 egui = "0.36"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -50,6 +50,7 @@ anyhow = "1.0"
 
 [lints.rust]
 missing_docs = "warn"
+linker_messages = "allow"
 
 [lints.rustdoc]
 all = { level = "warn", priority = -1 }
