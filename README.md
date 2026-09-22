@@ -245,7 +245,7 @@ The compiled binary archives for the supported platforms will then appear in Git
 - The `windows-update` module is available only on Windows when `powershell` or `pwsh` is installed. It is treated as a system module and requires elevated privileges.
 - The `windows-update` check uses no external PowerShell modules: the COM API `Microsoft.Update.Session` queries uninstalled, visible updates of type `Software` (`IsInstalled=0 and IsHidden=0 and Type='Software'`). Their titles are passed to the application as JSON and displayed as available updates.
 - Automatic Windows Update installation is disabled. When an update is started, the application reports the number of selected items and offers to open `Settings -> Windows Update` for manual installation.
-- `winget` and `choco` use specialized output parsing when checking for updates to reduce noise and false positives.
+- `winget` and `choco` use specialized output parsing when checking for updates; entries without an actual version increase are discarded. For `winget`, the application also checks whether the available version is already installed under a different package identifier. A successful command is considered sufficient confirmation because some installers, including Unity, retain the old version entry during an immediate follow-up check.
 - Homebrew uses the machine-readable `brew outdated --json=v2` output with typed parsing of formulae and casks.
 - `pip` is invoked through `python -m pip` to reduce dependency on executable paths.
 - For `npm` and `pnpm`, the versions of the CLI tools and globally installed packages are compared separately. `npm` is updated by globally installing the latest version, while `pnpm` uses `pnpm self-update <version>`.
@@ -254,6 +254,7 @@ The compiled binary archives for the supported platforms will then appear in Git
 - Requests to Node.js, Visual Studio Marketplace, and Open VSX share an HTTP client with a 10-second connection timeout and a 120-second overall request timeout.
 - The Node.js installation method is detected from available managers, the `node` path, and the Windows MSI registry entry. Supported methods are `nvm`, `fnm`, `winget`, Homebrew, and the official MSI. For MSI installations, the required installer is downloaded from `nodejs.org` and launched through `msiexec /passive /norestart`.
 - Extension versions for VS Code and VS Code Insiders are queried in batches from Visual Studio Marketplace, taking the platform and stable channel into account; Open VSX is used for the other supported editors.
+- Each selected editor extension is updated independently. If an individual extension is unavailable in the registry, the remaining extensions are still updated, and the final error lists the affected extensions.
 - VS Code profiles are detected from local user data. Extensions are checked and installed separately for each existing profile.
 - On Windows, non-UTF-8 output from external utilities can be decoded using `WINDOWS-1251`, `CP866`, with lossy UTF-8 as a fallback.
 - The module order in the final table and update results remains the same as in the updater registry, even when the tasks themselves run in parallel.
