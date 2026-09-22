@@ -1,40 +1,42 @@
 # UpdateAllModules
 
-Кроссплатформенная утилита на Rust для проверки и установки обновлений системных менеджеров, Python-пакетов, инструментов разработки и расширений VS Code-совместимых редакторов. Версия приложения определяется значением `package.version` из `Cargo.toml`.
+[Русская версия](docs/ru/README.md)
 
-Проект поддерживает два режима запуска:
+A cross-platform Rust utility for checking and installing updates for system package managers, Python packages, development tools, and extensions for VS Code-compatible editors. The application version is determined by the `package.version` value in `Cargo.toml`.
 
-- CLI для автоматизации и скриптов.
-- GUI на `egui` / `eframe` для интерактивной работы.
+The project supports two operating modes:
 
-## Возможности
+- A CLI for automation and scripts.
+- An `egui` / `eframe` GUI for interactive use.
 
-- Проверка и обновление системных менеджеров.
-- Интеграция с Центром обновления Windows через встроенный COM API.
-- Проверка и обновление `pip` через `python -m pip`.
-- Проверка и самообновление `npm` и `pnpm`, а также обновление установленных через них глобальных пакетов.
-- Проверка Node.js по официальному индексу релизов и обновление с учетом способа установки (`nvm`, `fnm`, `winget`, Homebrew или официальный MSI).
-- Проверка опубликованных версий и обновление расширений VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf и Positron.
-- Проверка и обновление расширений во всех локальных профилях VS Code и VS Code Insiders.
-- Обновление самих редакторов через системный менеджер (`winget`, `choco`, `apt`, `brew` и другие).
-- Поддержка `rustup`.
-- Поддержка `msys2` через `pacman` на Windows.
-- Табличный вывод в CLI.
-- Параллельное сканирование модулей.
-- Параллельное обновление независимых модулей с ограничением числа рабочих потоков.
-- Потоковые логи обновления в CLI при `--verbose` с указанием модуля и этапа.
-- Фоновое сканирование и обновление в GUI.
-- Группировка логов по модулям в отдельной вкладке GUI.
-- Отображение этапа обновления каждого модуля прямо в GUI (`в очереди`, `выполняется`, `завершен`, `ошибка`).
+## Features
 
-## Поддерживаемые инструменты
+- Checks and updates system package managers.
+- Integrates with Windows Update through the built-in COM API.
+- Checks and updates `pip` through `python -m pip`.
+- Checks and updates `npm` and `pnpm` themselves, as well as globally installed packages managed by them.
+- Checks Node.js against the official release index and updates it according to the installation method (`nvm`, `fnm`, `winget`, Homebrew, or the official MSI).
+- Checks published versions and updates extensions for VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, and Positron.
+- Checks and updates extensions across all local VS Code and VS Code Insiders profiles.
+- Updates the editors themselves through the system package manager (`winget`, `choco`, `apt`, `brew`, and others).
+- Supports `rustup`.
+- Supports `msys2` through `pacman` on Windows.
+- Provides tabular CLI output.
+- Scans modules in parallel.
+- Updates independent modules in parallel with a limited number of worker threads.
+- Streams update logs in the CLI when `--verbose` is enabled, including the module and stage.
+- Runs scans and updates in the background in the GUI.
+- Groups logs by module in a dedicated GUI tab.
+- Displays each module's update stage directly in the GUI (`queued`, `running`, `completed`, `error`).
+
+## Supported Tools
 
 ### Windows
 
-- `windows-update` (Центр обновления Windows)
+- `windows-update` (Windows Update)
 - `winget`
 - `choco`
-- `msys2` через доступный в `PATH` `pacman`
+- `msys2` through a `pacman` executable available in `PATH`
 
 ### Linux
 
@@ -55,38 +57,38 @@
 
 - `brew`
 
-### Общие инструменты
+### Cross-platform Tools
 
 - `rustup`
-- `node` (официальный индекс релизов; обновление через исходный менеджер или официальный MSI)
-- `npm` (самообновление и глобальные пакеты)
-- `pnpm` (`self-update` и глобальные пакеты)
+- `node` (official release index; updates through the original manager or the official MSI)
+- `npm` (self-update and global packages)
+- `pnpm` (`self-update` and global packages)
 - `vscode-extensions` (`code`)
 - `vscode-insiders-extensions` (`code-insiders`)
 - `vscodium-extensions` (`codium`)
 - `cursor-extensions` (`cursor`)
 - `windsurf-extensions` (`windsurf`)
 - `positron-extensions` (`positron`)
-- `pip` через `python -m pip`
-- `uv` через `uv pip`
+- `pip` through `python -m pip`
+- `uv` through `uv pip`
 
-Установленные расширения перечисляются через CLI соответствующего редактора. Для VS Code и VS Code Insiders приложение обнаруживает локальные профили, отдельно сканирует каждый профиль с `--profile` и устанавливает выбранное обновление обратно в исходный профиль. Одинаковое расширение в разных профилях отображается и выбирается независимо.
+Installed extensions are listed through the corresponding editor's CLI. For VS Code and VS Code Insiders, the application detects local profiles, scans each profile separately with `--profile`, and installs the selected update back into the source profile. The same extension in different profiles is displayed and selected independently.
 
-Опубликованные версии запрашиваются из Visual Studio Marketplace для VS Code и VS Code Insiders и из Open VSX для остальных совместимых редакторов. Marketplace-запросы выполняются пакетами; для расширений с предварительной версией на вершине выполняется точечный запрос истории. Выбирается стабильная версия для текущей платформы без отката на устаревшую универсальную сборку.
+Published versions are queried from Visual Studio Marketplace for VS Code and VS Code Insiders, and from Open VSX for the other compatible editors. Marketplace requests are batched; when a pre-release version is listed first, the application makes a targeted version-history request. It selects a stable version for the current platform without falling back to an outdated universal build.
 
-Для проверки расширений требуется доступ к соответствующему реестру по HTTPS. Расширения, отсутствующие в выбранном реестре, пропускаются. Для обновления самого редактора должен быть включен системный менеджер, через который он установлен.
+Checking extensions requires HTTPS access to the corresponding registry. Extensions missing from the selected registry are skipped. To update an editor itself, the system package manager through which it was installed must be enabled.
 
-## Режимы запуска
+## Operating Modes
 
-Приложение использует один бинарный файл и выбирает режим работы по аргументам командной строки:
+The application uses a single binary and selects its operating mode based on command-line arguments:
 
-- Без аргументов запускается GUI.
-- При наличии аргументов запускается CLI.
-- Флаг `--gui` принудительно открывает графический интерфейс.
+- With no arguments, the GUI starts.
+- When arguments are provided, the CLI starts.
+- The `--gui` flag explicitly opens the graphical interface.
 
 ## CLI
 
-Примеры:
+Examples:
 
 ```powershell
 cargo run -- --help
@@ -98,103 +100,102 @@ cargo run -- --yes --verbose
 cargo run -- --gui
 ```
 
-Доступные флаги:
+Available flags:
 
-- `-h, --help` — показать встроенную справку, примеры и имена модулей.
-- `-V, --version` — показать версию приложения.
-- `-c, --check` — только проверка доступных обновлений.
-- `-y, --yes` — автоматически подтверждать обновления.
-- `--gui` — принудительно открыть GUI.
-- `-v, --verbose` — подробный вывод.
-- `--skip-system` — пропустить системные менеджеры.
-- `--skip-pip` — пропустить `pip`.
-- `--skip-tools` — пропустить инструменты разработки.
-- `--only-tools` — оставить только инструменты разработки.
-- `--only <NAME>` — ограничить список конкретными модулями.
+- `-h, --help` - show built-in help, examples, and module names.
+- `-V, --version` - show the application version.
+- `-c, --check` - only check for available updates.
+- `-y, --yes` - automatically confirm updates.
+- `--gui` - explicitly open the GUI.
+- `-v, --verbose` - show detailed output.
+- `--skip-system` - skip system package managers.
+- `--skip-pip` - skip `pip`.
+- `--skip-tools` - skip development tools.
+- `--only-tools` - include only development tools.
+- `--only <NAME>` - limit the list to specific modules.
 
-Поведение CLI:
+CLI behavior:
 
-- В режиме обновления вывод статуса остается компактным по умолчанию.
-- При `--verbose` показываются потоковые логи выполнения внешних команд в формате `[module] сообщение`.
-- Ошибки модулей выводятся всегда, даже без `--verbose`.
-- Флаг `-y, --yes` включает неинтерактивный режим там, где он поддерживается менеджером.
-- Неизвестные значения `--only` отклоняются до начала сканирования с выводом допустимых имён модулей.
+- In update mode, status output remains compact by default.
+- With `--verbose`, external command logs are streamed in the format `[module] message`.
+- Module errors are always displayed, even without `--verbose`.
+- The `-y, --yes` flag enables non-interactive mode where supported by the package manager.
+- Unknown `--only` values are rejected before scanning starts, and the valid module names are displayed.
 
-Параллелизм в CLI и GUI:
+Parallelism in the CLI and GUI:
 
-- Проверка обновлений запускается параллельно по всем подходящим модулям.
-- Обновление `pip`, `uv`, `rustup` и других несистемных инструментов выполняется параллельно.
-- Число параллельных worker-потоков ограничено, чтобы не перегружать систему при большом числе модулей.
-- Системные менеджеры (`winget`, `choco`, `apt`, `pacman` и аналогичные) остаются в отдельной последовательной очереди, чтобы не сталкиваться с блокировками пакетных баз и конкурирующими системными изменениями.
-- Логи каждого обновлятора автоматически помечаются именем модуля, поэтому даже при параллельной работе видно текущий этап каждого процесса.
+- Update checks run in parallel for all eligible modules.
+- Updates for `pip`, `uv`, `rustup`, and other non-system tools run in parallel.
+- The number of parallel worker threads is limited to avoid overloading the system when many modules are enabled.
+- System package managers (`winget`, `choco`, `apt`, `pacman`, and similar tools) remain in a separate sequential queue to prevent package database locks and conflicting system changes.
+- Logs from each updater are automatically tagged with the module name, so the current stage of each process remains visible during parallel execution.
 
 ## GUI
 
-В графическом режиме доступны:
+The graphical mode provides:
 
-- кнопка перезапуска с правами администратора или `root`, когда текущих прав недостаточно;
-- кнопка проверки обновлений;
-- кнопка обновления выбранных модулей;
-- кнопка обновления всех модулей;
-- кнопка отмены, которая останавливает очередь и завершает уже запущенные дочерние процессы;
-- меню выбора модулей с чекбоксами для точного выбора, что обновлять;
-- счетчики `выбрано/всего` и `с обновлениями/всего`;
-- сохранение выбранных модулей между перезапусками GUI;
-- хранение настроек в системном каталоге конфигурации с атомарной записью JSON;
-- сохранение чекбокса автоматического подтверждения `-y` между перезапусками GUI;
-- чекбокс автоматического подтверждения `-y`;
-- скрытие не найденных модулей по умолчанию;
-- флаг в настройках для показа не найденных модулей;
-- список найденных менеджеров и инструментов со статусом;
-- раскрывающиеся блоки с деталями обновлений и чекбоксами приложений внутри модуля;
-- отдельная вкладка логов с раскрывающимися группами по модулям;
-- группированный по модулям экспорт логов в текстовый файл;
-- автоматическое пересканирование статусов после завершения обновления;
-- цветной статус текущего этапа обновления прямо на карточке каждого модуля.
+- a button to restart with administrator or `root` privileges when the current privileges are insufficient;
+- a button to check for updates;
+- a button to update selected modules;
+- a button to update all modules;
+- a cancel button that stops the queue and terminates already started child processes;
+- a module selection menu with checkboxes for precise control over what is updated;
+- `selected/total` and `with updates/total` counters;
+- persistence of selected modules between GUI restarts;
+- storage of settings in the system configuration directory with atomic JSON writes;
+- persistence of the `-y` automatic confirmation checkbox between GUI restarts;
+- an automatic confirmation `-y` checkbox;
+- hidden unavailable modules by default;
+- a setting to show unavailable modules;
+- a status list of detected package managers and tools;
+- expandable update details with application checkboxes inside each module;
+- a dedicated logs tab with expandable groups by module;
+- export of logs grouped by module to a text file;
+- automatic status rescanning after an update finishes;
+- a colored status for the current update stage directly on each module card.
 
-В Windows кнопка повышения прав перезапускает приложение через системный запрос UAC. В Linux для неё требуются `pkexec` и активный агент PolicyKit. Если средство повышения прав недоступно или запуск отклонён, текущее окно остаётся открытым, а причина отображается в статусе и логах. Служебные файлы повышения прав принимаются только как одноразовые обычные файлы ожидаемого формата непосредственно в системном временном каталоге.
+On Windows, the privilege elevation button restarts the application through the system UAC prompt. On Linux, it requires `pkexec` and an active PolicyKit agent. If no elevation mechanism is available or the request is rejected, the current window remains open and the reason is shown in the status and logs. Privilege-elevation support files are accepted only as one-time regular files in the expected format located directly in the system temporary directory.
 
-## Сборка и запуск
+## Build and Run
 
-### Сборка
+### Build
 
 ```powershell
 cargo build
 ```
 
-### Запуск GUI по умолчанию
+### Start the GUI by Default
 
 ```powershell
 cargo run
 ```
 
-### Запуск CLI
+### Start the CLI
 
 ```powershell
 cargo run -- --check
 ```
 
-### Документация разработчика
+### Developer Documentation
 
-Сгенерировать локальную документацию без документации зависимостей:
+Generate local documentation without dependency documentation:
 
 ```powershell
 cargo doc --no-deps --open
 ```
 
-Проект включает проверки `missing_docs` и `rustdoc::all`; битые
-внутридокументные ссылки запрещены на уровне `Cargo.toml`.
+The project enables the `missing_docs` and `rustdoc::all` checks; broken intra-doc links are denied in `Cargo.toml`.
 
-### Качество кода Rust
+### Rust Code Quality
 
-Установить компоненты форматирования и статического анализа:
+Install the formatting and static analysis components:
 
 ```powershell
 rustup component add rustfmt clippy
 cargo install cargo-audit --locked
 ```
 
-Запустить проверки, используемые перед публикацией изменений:
+Run the checks used before publishing changes:
 
 ```powershell
 cargo fmt --all -- --check
@@ -204,7 +205,7 @@ cargo doc --no-deps --locked
 cargo audit
 ```
 
-Чтобы применить форматирование, а не только проверить его:
+To apply formatting instead of only checking it:
 
 ```powershell
 cargo fmt --all
@@ -212,12 +213,12 @@ cargo fmt --all
 
 ## CI/CD
 
-В репозитории настроены GitHub Actions workflows:
+The repository includes GitHub Actions workflows:
 
-- CI: на каждом `push` в `main` / `master` и на каждом `pull_request` запускаются тесты и release-сборка на Windows, Linux и macOS.
-- Release: при пуше тега формата `v*` автоматически собираются артефакты для Windows, Linux и macOS и публикуются в GitHub Releases.
+- CI: tests and release builds run on Windows, Linux, and macOS for every `push` to `main` / `master` and every `pull_request`.
+- Release: pushing a tag matching `v*` automatically builds artifacts for Windows, Linux, and macOS and publishes them to GitHub Releases.
 
-Публикация релиза текущей версии из `Cargo.toml`:
+Publish a release for the current version from `Cargo.toml`:
 
 ```powershell
 $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
@@ -225,49 +226,49 @@ git tag "v$version"
 git push origin "v$version"
 ```
 
-После этого в GitHub Releases появятся собранные бинарные архивы для поддерживаемых платформ.
+The compiled binary archives for the supported platforms will then appear in GitHub Releases.
 
-## Технические детали
+## Technical Details
 
-- Язык: Rust, edition 2024.
+- Language: Rust, edition 2024.
 - CLI: `clap`.
 - GUI: `egui`, `eframe`.
-- Таблица CLI: `comfy-table`.
-- Ошибки: `anyhow`, `thiserror`.
+- CLI table: `comfy-table`.
+- Errors: `anyhow`, `thiserror`.
 - JSON: `serde`, `serde_json`.
-- HTTP и TLS: `reqwest` с `rustls`.
-- Кодировки Windows: `encoding_rs`.
-- Проверка прав администратора: `is_elevated`.
+- HTTP and TLS: `reqwest` with `rustls`.
+- Windows encodings: `encoding_rs`.
+- Administrator privilege check: `is_elevated`.
 
-## Детали реализации
+## Implementation Details
 
-- Модуль `windows-update` доступен только на Windows при наличии `powershell` или `pwsh`, относится к системным модулям и требует повышения прав.
-- Проверка `windows-update` выполняется без внешних PowerShell-модулей: через COM API `Microsoft.Update.Session` запрашиваются неустановленные, нескрытые обновления типа `Software` (`IsInstalled=0 and IsHidden=0 and Type='Software'`). Их заголовки передаются приложению в JSON и отображаются как доступные обновления.
-- Автоматическая установка обновлений Windows отключена. При запуске обновления приложение сообщает число выбранных позиций и предлагает открыть `Параметры → Центр обновления Windows` для ручной установки.
-- Для `winget` и `choco` используется специализированный разбор вывода при проверке обновлений (уменьшает шум и ложные срабатывания).
-- Для Homebrew используется машинный формат `brew outdated --json=v2` с типизированным разбором formulae и casks.
-- Для `pip` используется вызов `python -m pip`, чтобы снизить зависимость от путей к исполняемым файлам.
-- Для `npm` и `pnpm` отдельно сравниваются версии самих CLI и глобально установленных пакетов. `npm` обновляется через глобальную установку актуальной версии, `pnpm` — через `pnpm self-update <версия>`.
-- Отсутствующий глобальный каталог `npm` считается пустой глобальной установкой, а не ошибкой проверки. Ответ npm 12 с версией в одноэлементном JSON-массиве также поддерживается.
-- Последняя версия Node.js запрашивается из официального `https://nodejs.org/dist/index.json`.
-- Запросы к Node.js, Visual Studio Marketplace и Open VSX используют общий HTTP-клиент с таймаутом подключения 10 секунд и общим таймаутом запроса 120 секунд.
-- Способ установки Node.js определяется по доступным менеджерам, пути `node` и записи MSI в реестре Windows. Поддерживаются `nvm`, `fnm`, `winget`, Homebrew и официальный MSI. Для MSI установщик нужной версии загружается с `nodejs.org` и запускается через `msiexec /passive /norestart`.
-- Для расширений VS Code и VS Code Insiders версии запрашиваются пакетами из Visual Studio Marketplace с учетом платформы и стабильного канала; для остальных поддерживаемых редакторов используется Open VSX.
-- Профили VS Code обнаруживаются по локальным данным пользователя. Проверка и установка расширений выполняются отдельно для каждого существующего профиля.
-- На Windows предусмотрена декодировка не-UTF8 вывода внешних утилит (`WINDOWS-1251`, `CP866`, fallback на lossy UTF-8).
-- Порядок модулей в итоговой таблице и в результатах обновления сохраняется таким же, как в реестре обновляторов, даже если сами задачи выполнялись параллельно.
+- The `windows-update` module is available only on Windows when `powershell` or `pwsh` is installed. It is treated as a system module and requires elevated privileges.
+- The `windows-update` check uses no external PowerShell modules: the COM API `Microsoft.Update.Session` queries uninstalled, visible updates of type `Software` (`IsInstalled=0 and IsHidden=0 and Type='Software'`). Their titles are passed to the application as JSON and displayed as available updates.
+- Automatic Windows Update installation is disabled. When an update is started, the application reports the number of selected items and offers to open `Settings -> Windows Update` for manual installation.
+- `winget` and `choco` use specialized output parsing when checking for updates to reduce noise and false positives.
+- Homebrew uses the machine-readable `brew outdated --json=v2` output with typed parsing of formulae and casks.
+- `pip` is invoked through `python -m pip` to reduce dependency on executable paths.
+- For `npm` and `pnpm`, the versions of the CLI tools and globally installed packages are compared separately. `npm` is updated by globally installing the latest version, while `pnpm` uses `pnpm self-update <version>`.
+- A missing global `npm` directory is treated as an empty global installation rather than a check failure. The npm 12 response containing a version in a single-element JSON array is also supported.
+- The latest Node.js version is queried from the official `https://nodejs.org/dist/index.json`.
+- Requests to Node.js, Visual Studio Marketplace, and Open VSX share an HTTP client with a 10-second connection timeout and a 120-second overall request timeout.
+- The Node.js installation method is detected from available managers, the `node` path, and the Windows MSI registry entry. Supported methods are `nvm`, `fnm`, `winget`, Homebrew, and the official MSI. For MSI installations, the required installer is downloaded from `nodejs.org` and launched through `msiexec /passive /norestart`.
+- Extension versions for VS Code and VS Code Insiders are queried in batches from Visual Studio Marketplace, taking the platform and stable channel into account; Open VSX is used for the other supported editors.
+- VS Code profiles are detected from local user data. Extensions are checked and installed separately for each existing profile.
+- On Windows, non-UTF-8 output from external utilities can be decoded using `WINDOWS-1251`, `CP866`, with lossy UTF-8 as a fallback.
+- The module order in the final table and update results remains the same as in the updater registry, even when the tasks themselves run in parallel.
 
-## Статус реализации
+## Implementation Status
 
-Проект собирается и запускается. Базовые сценарии CLI и GUI работают, обновление реализовано через адаптеры по каждому инструменту.
+The project builds and runs. The basic CLI and GUI scenarios work, and updates are implemented through adapters for each tool.
 
-Текущие ограничения:
+Current limitations:
 
-- Для части Linux-менеджеров (`dnf`, `yum`, `zypper`, `pacman`, `apk`, `xbps`, `emerge`, `snap`) проверка обновлений опирается на эвристический разбор текстового вывода, поскольку единый стабильный машинный формат доступен не во всех поддерживаемых версиях.
-- Для `msys2` используется приоритетный вызов внутреннего `pacman` через `bash.exe` из типовых каталогов установки (`C:\msys64`, `C:\tools\msys64`) с fallback на `pacman` из `PATH`.
-- Проверка опубликованных версий расширений зависит от доступности Visual Studio Marketplace или Open VSX; расширения из частных и альтернативных реестров автоматически не сопоставляются.
-- Если способ установки Node.js определить не удалось, автоматическое обновление отменяется с рекомендацией использовать исходный менеджер или официальный установщик. Обновление системной MSI-установки на Windows может потребовать прав администратора.
+- For some Linux package managers (`dnf`, `yum`, `zypper`, `pacman`, `apk`, `xbps`, `emerge`, `snap`), update checks rely on heuristic parsing of text output because a single stable machine-readable format is not available across all supported versions.
+- For `msys2`, the preferred method invokes its internal `pacman` through `bash.exe` from common installation directories (`C:\msys64`, `C:\tools\msys64`), with a fallback to `pacman` from `PATH`.
+- Checking published extension versions depends on the availability of Visual Studio Marketplace or Open VSX; extensions from private and alternative registries are not matched automatically.
+- If the Node.js installation method cannot be detected, the automatic update is canceled with a recommendation to use the original package manager or the official installer. Updating a system-wide MSI installation on Windows may require administrator privileges.
 
-## Лицензия
+## License
 
-MIT, см. файл `LICENSE`.
+MIT. See the `LICENSE` file.
