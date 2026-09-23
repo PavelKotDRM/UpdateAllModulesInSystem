@@ -210,7 +210,8 @@ fn current_node_version() -> Result<String, UpdaterError> {
             let (bash, args) = nvm_shell_command(&script, &["version", "default"])?;
             let output = capture_command(&bash, &args)?;
             ensure_success("nvm", &output)?;
-            let default_version = output.merged_text().trim();
+            let default_text = output.merged_text();
+            let default_version = default_text.trim();
             if !default_version.eq_ignore_ascii_case("n/a")
                 && !default_version.eq_ignore_ascii_case("system")
             {
