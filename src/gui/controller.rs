@@ -28,8 +28,9 @@ impl GuiApp {
     ) -> Self {
         let (events_tx, events_rx) = repaint::channel(context);
         let persisted_state = load_gui_state();
-        let persisted_selection: BTreeSet<String> =
-            persisted_state.selected_modules.iter().cloned().collect();
+        let persisted_selection = persisted_state
+            .selected_modules
+            .map(|selected| selected.into_iter().collect());
         let persisted_update_selection: BTreeMap<String, BTreeSet<String>> = persisted_state
             .selected_updates
             .into_iter()
@@ -137,11 +138,19 @@ impl GuiApp {
             return;
         }
 
-        cancellation.cancel();
-        self.status_line = String::from("Отмена запрошена: завершаются активные процессы...");
-        self.append_log(String::from(
-            "[system] Отмена запрошена; активные процессы завершаются, новые модули запускаться не будут",
-        ));
+        let termination_errors = cancellation.cancel();
+        if termination_errors.is_empty() {
+            self.status_line = String::from("Отмена запрошена: завершаются процессы обновления...");
+            self.append_log(String::from(
+                "[system] Отмена запрошена; процессы обновления завершаются, новые модули запускаться не будут",
+            ));
+        } else {
+            self.status_line =
+                String::from("Отмена запрошена, но не все процессы удалось остановить");
+            for error in termination_errors {
+                self.append_log(format!("[system] Ошибка отмены: {error}"));
+            }
+        }
     }
 
     pub(super) fn start_update_all(&mut self) {
@@ -150,10 +159,7 @@ impl GuiApp {
         }
 
         for module in &mut self.modules {
-            module.selected = true;
-            for update in &mut module.updates {
-                update.selected = true;
-            }
+            Self::set_module_selected(module, true);
         }
         self.persist_state();
         self.start_update();
@@ -164,9 +170,9 @@ impl GuiApp {
             return;
         }
 
-        let missing_elevated_modules = Self::missing_elevated_module_names(&self.modules);
-        if missing_elevated_modules.is_empty() {
-            self.status_line = String::from("Нет отсутствующих модулей для повторной проверки");
+        let elevated_module_names = Self::elevated_module_names(&self.modules);
+        if elevated_module_names.is_empty() {
+            self.status_line = String::from("Нет модулей, требующих повышенных прав");
             return;
         }
 
@@ -184,7 +190,7 @@ impl GuiApp {
         self.status_line = String::from("Запрос повышенных прав...");
         let sender = self.events_tx.clone();
         thread::spawn(move || {
-            let result = system::restart_elevated(&missing_elevated_modules, &elevation_state_file)
+            let result = system::restart_elevated(&elevated_module_names, &elevation_state_file)
                 .map_err(|error| error.to_string());
             if result.is_err() {
                 let _ = fs::remove_file(elevation_state_file);
@@ -195,14 +201,15 @@ impl GuiApp {
 
     fn select_only_updates(&mut self) {
         for module in &mut self.modules {
-            module.selected = module.installed && module.status.has_updates();
+            let selected = module.installed && module.status.has_updates();
+            Self::set_module_selected(module, selected);
         }
         self.persist_state();
     }
 
     fn invert_selection(&mut self) {
         for module in &mut self.modules {
-            module.selected = !module.selected;
+            Self::set_module_selected(module, !module.selected);
         }
         self.persist_state();
     }
@@ -223,10 +230,10 @@ impl GuiApp {
             .count()
     }
 
-    fn missing_elevated_module_names(modules: &[ModuleSnapshot]) -> Vec<String> {
+    fn elevated_module_names(modules: &[ModuleSnapshot]) -> Vec<String> {
         modules
             .iter()
-            .filter(|module| module.requires_elevation && !module.installed)
+            .filter(|module| module.requires_elevation)
             .map(|module| module.name.clone())
             .collect()
     }
@@ -236,33 +243,35 @@ impl GuiApp {
     }
 
     fn apply_persisted_selection(&mut self) {
-        if self.persisted_selection.is_empty() {
-            for module in &mut self.modules {
-                if let Some(saved_updates) = self.persisted_update_selection.get(&module.name) {
-                    for update in &mut module.updates {
-                        update.selected = saved_updates.contains(&update.selection_key());
-                    }
-                }
-            }
-            return;
-        }
-
         for module in &mut self.modules {
-            module.selected = self.persisted_selection.contains(&module.name);
+            if let Some(selection) = &self.persisted_selection {
+                module.selected = selection.contains(&module.name);
+            }
             if let Some(saved_updates) = self.persisted_update_selection.get(&module.name) {
                 for update in &mut module.updates {
                     update.selected = saved_updates.contains(&update.selection_key());
+                }
+            }
+
+            if !module.selected {
+                for update in &mut module.updates {
+                    update.selected = false;
+                }
+            } else if module.supports_package_selection
+                && !module.updates.is_empty()
+                && !module.updates.iter().any(|update| update.selected)
+            {
+                module.selected = false;
+            } else if !module.supports_package_selection {
+                for update in &mut module.updates {
+                    update.selected = true;
                 }
             }
         }
     }
 
     pub(super) fn is_module_visible(&self, module: &ModuleSnapshot) -> bool {
-        if !module.installed {
-            return self.show_not_found;
-        }
-
-        self.show_up_to_date || !matches!(module.status, ModuleStatus::UpToDate)
+        Self::module_is_visible(module, self.show_not_found, self.show_up_to_date)
     }
 
     pub(super) fn visible_modules_count(&self) -> usize {
@@ -273,14 +282,13 @@ impl GuiApp {
     }
 
     pub(super) fn show_selection_menu(&mut self, ui: &mut egui::Ui) {
+        let show_not_found = self.show_not_found;
+        let show_up_to_date = self.show_up_to_date;
         ui.menu_button("Выбор модулей", |ui| {
             if ui.button("Отметить все видимые").clicked() {
                 for module in &mut self.modules {
-                    if self.show_not_found || module.installed {
-                        module.selected = true;
-                        for update in &mut module.updates {
-                            update.selected = true;
-                        }
+                    if Self::module_is_visible(module, show_not_found, show_up_to_date) {
+                        Self::set_module_selected(module, true);
                     }
                 }
                 self.persist_state();
@@ -289,11 +297,8 @@ impl GuiApp {
 
             if ui.button("Снять выбор с видимых").clicked() {
                 for module in &mut self.modules {
-                    if self.show_not_found || module.installed {
-                        module.selected = false;
-                        for update in &mut module.updates {
-                            update.selected = false;
-                        }
+                    if Self::module_is_visible(module, show_not_found, show_up_to_date) {
+                        Self::set_module_selected(module, false);
                     }
                 }
                 self.persist_state();
@@ -319,6 +324,8 @@ impl GuiApp {
                 }
                 let label = format!("{} ({})", module.name, module.status_label());
                 if ui.checkbox(&mut module.selected, label).changed() {
+                    let selected = module.selected;
+                    Self::set_module_selected(module, selected);
                     selection_changed = true;
                 }
             }
@@ -330,12 +337,13 @@ impl GuiApp {
     }
 
     pub(super) fn persist_state(&mut self) {
-        self.persisted_selection = self
+        let selection = self
             .modules
             .iter()
             .filter(|module| module.selected)
             .map(|module| module.name.clone())
-            .collect();
+            .collect::<BTreeSet<_>>();
+        self.persisted_selection = Some(selection.clone());
 
         self.persisted_update_selection = self
             .modules
@@ -352,7 +360,7 @@ impl GuiApp {
             .collect();
 
         if let Err(error) = save_gui_state(
-            &self.persisted_selection,
+            &selection,
             &self.persisted_update_selection,
             self.auto_yes,
             self.show_not_found,
@@ -362,6 +370,25 @@ impl GuiApp {
                 "[system] Не удалось сохранить состояние GUI: {error}"
             ));
         }
+    }
+
+    fn set_module_selected(module: &mut ModuleSnapshot, selected: bool) {
+        module.selected = selected;
+        for update in &mut module.updates {
+            update.selected = selected;
+        }
+    }
+
+    fn module_is_visible(
+        module: &ModuleSnapshot,
+        show_not_found: bool,
+        show_up_to_date: bool,
+    ) -> bool {
+        if !module.installed {
+            return show_not_found;
+        }
+
+        show_up_to_date || !matches!(module.status, ModuleStatus::UpToDate)
     }
 
     pub(super) fn process_events(&mut self) {
@@ -423,7 +450,7 @@ mod tests {
     use crate::model::{ModuleKind, ModuleStatus};
 
     #[test]
-    fn selects_only_missing_modules_that_require_elevation() {
+    fn selects_installed_and_missing_modules_that_require_elevation() {
         let mut missing_elevated = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
         let mut installed_elevated = ModuleSnapshot::new("winget", ModuleKind::System, true);
         installed_elevated.installed = true;
@@ -431,13 +458,70 @@ mod tests {
         missing_elevated.installed = false;
 
         assert_eq!(
-            GuiApp::missing_elevated_module_names(&[
+            GuiApp::elevated_module_names(&[
                 missing_elevated,
                 installed_elevated,
                 missing_standard,
             ]),
-            vec!["windows-update"]
+            vec!["windows-update", "winget"]
         );
+    }
+
+    #[test]
+    fn empty_persisted_selection_keeps_every_module_unselected() {
+        let mut module = ModuleSnapshot::new("winget", ModuleKind::System, true);
+        module.installed = true;
+        module.status = ModuleStatus::UpdatesAvailable(1);
+        module.updates = vec![crate::model::PackageUpdate::new(
+            "winget:package",
+            "1.0",
+            "2.0",
+        )];
+        let mut app = GuiApp {
+            filter: SelectionFilter::default(),
+            events_tx: repaint::channel(&egui::Context::default()).0,
+            events_rx: mpsc::channel().1,
+            modules: vec![module],
+            logs: BTreeMap::new(),
+            busy: false,
+            auto_yes: false,
+            status_line: String::new(),
+            started_scan: false,
+            persisted_selection: Some(BTreeSet::new()),
+            persisted_update_selection: BTreeMap::from([(
+                "winget".to_owned(),
+                BTreeSet::from(["winget:package".to_owned()]),
+            )]),
+            active_tab: GuiTab::Overview,
+            show_not_found: false,
+            show_up_to_date: false,
+            module_progress: BTreeMap::new(),
+            update_cancellation: None,
+            elevation_pending: false,
+            close_after_elevation: false,
+        };
+
+        app.apply_persisted_selection();
+
+        assert!(!app.modules[0].selected);
+        assert!(!app.modules[0].updates[0].selected);
+    }
+
+    #[test]
+    fn changing_module_selection_synchronizes_package_selection() {
+        let mut module = ModuleSnapshot::new("winget", ModuleKind::System, true);
+        module.updates = vec![
+            crate::model::PackageUpdate::new("winget:first", "1.0", "2.0"),
+            crate::model::PackageUpdate::new("winget:second", "1.0", "2.0"),
+        ];
+
+        GuiApp::set_module_selected(&mut module, false);
+        assert!(!module.selected);
+        assert!(module.updates.iter().all(|update| !update.selected));
+
+        GuiApp::set_module_selected(&mut module, true);
+        assert!(module.selected);
+        assert!(module.updates.iter().all(|update| update.selected));
     }
 
     #[test]
@@ -456,7 +540,7 @@ mod tests {
             auto_yes: false,
             status_line: String::new(),
             started_scan: false,
-            persisted_selection: BTreeSet::new(),
+            persisted_selection: None,
             persisted_update_selection: BTreeMap::new(),
             active_tab: GuiTab::Overview,
             show_not_found: false,
@@ -489,7 +573,7 @@ mod tests {
             auto_yes: false,
             status_line: String::new(),
             started_scan: false,
-            persisted_selection: BTreeSet::new(),
+            persisted_selection: None,
             persisted_update_selection: BTreeMap::new(),
             active_tab: GuiTab::Overview,
             show_not_found: false,

@@ -18,7 +18,7 @@ const LEGACY_GUI_STATE_FILE: &str = ".update_all_modules_gui_state.json";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct GuiState {
-    pub(super) selected_modules: Vec<String>,
+    pub(super) selected_modules: Option<Vec<String>>,
     pub(super) auto_yes: Option<bool>,
     pub(super) show_not_found: Option<bool>,
     pub(super) show_up_to_date: Option<bool>,
@@ -69,7 +69,7 @@ pub(super) fn save_gui_state(
     let path = gui_state_path()
         .ok_or_else(|| anyhow::anyhow!("не удалось определить каталог конфигурации"))?;
     let state = GuiState {
-        selected_modules: selection.iter().cloned().collect(),
+        selected_modules: Some(selection.iter().cloned().collect()),
         auto_yes: Some(auto_yes),
         show_not_found: Some(show_not_found),
         show_up_to_date: Some(show_up_to_date),
@@ -183,7 +183,7 @@ pub(super) fn take_elevation_modules(path: &std::path::Path) -> Option<Vec<Modul
 
 #[cfg(test)]
 mod tests {
-    use super::write_atomically;
+    use super::{GuiState, write_atomically};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -211,5 +211,15 @@ mod tests {
                 .ends_with(".tmp")
         }));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn gui_state_distinguishes_empty_selection_from_missing_selection() {
+        let explicitly_empty: GuiState =
+            serde_json::from_str(r#"{"selected_modules":[],"selected_updates":{}}"#).unwrap();
+        let not_saved: GuiState = serde_json::from_str(r#"{"selected_updates":{}}"#).unwrap();
+
+        assert_eq!(explicitly_empty.selected_modules, Some(Vec::new()));
+        assert_eq!(not_saved.selected_modules, None);
     }
 }

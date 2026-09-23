@@ -27,6 +27,7 @@ pub struct UpdaterDescriptor {
 
 struct FunctionUpdater {
     name: &'static str,
+    supports_package_selection: bool,
     installed: InstalledFn,
     check: CheckFn,
     apply: ApplyFn,
@@ -41,6 +42,8 @@ pub struct UpdaterSpec {
     pub kind: ModuleKind,
     /// Признак необходимости повышенных прав.
     pub requires_elevation: bool,
+    /// Можно ли безопасно обновлять выбранные пакеты отдельно.
+    pub supports_package_selection: bool,
     /// Функция проверки установки.
     pub installed: InstalledFn,
     /// Функция проверки доступных обновлений.
@@ -52,6 +55,10 @@ pub struct UpdaterSpec {
 impl Updater for FunctionUpdater {
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn supports_package_selection(&self) -> bool {
+        self.supports_package_selection
     }
 
     fn is_installed(&self) -> bool {
@@ -78,6 +85,7 @@ impl UpdaterSpec {
         UpdaterDescriptor {
             updater: Box::new(FunctionUpdater {
                 name: self.name,
+                supports_package_selection: self.supports_package_selection,
                 installed: self.installed,
                 check: self.check,
                 apply: self.apply,

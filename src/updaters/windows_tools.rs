@@ -99,6 +99,14 @@ pub(super) fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError>
         ],
     )?;
     let updates = parse_winget_updates(&output.merged_text());
+    if !output.success && !winget_reports_no_upgrades(&output) {
+        return Err(UpdaterError::CommandFailed {
+            program: "winget".to_owned(),
+            code: output.exit_code,
+            stderr: output.merged_text().trim().to_owned(),
+        });
+    }
+
     let mut pending_updates = Vec::with_capacity(updates.len());
     for update in updates {
         if !winget_target_version_is_installed(&update)? {
@@ -106,6 +114,18 @@ pub(super) fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError>
         }
     }
     Ok(pending_updates)
+}
+
+fn winget_reports_no_upgrades(output: &CommandOutput) -> bool {
+    let text = output.merged_text().to_ascii_lowercase();
+    output.exit_code == Some(0x8a15002b_u32 as i32)
+        || [
+            "no applicable upgrade found",
+            "no installed package found matching input criteria",
+            "no upgrades available",
+        ]
+        .iter()
+        .any(|message| text.contains(message))
 }
 
 fn winget_target_version_is_installed(update: &PackageUpdate) -> Result<bool, UpdaterError> {
@@ -281,7 +301,22 @@ pub(super) fn chocolatey_check_updates() -> Result<Vec<PackageUpdate>, UpdaterEr
             "--limit-output".to_owned(),
         ],
     )?;
-    Ok(parse_choco_updates(&output.merged_text()))
+    parse_chocolatey_check_output(&output)
+}
+
+fn parse_chocolatey_check_output(
+    output: &CommandOutput,
+) -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let updates = parse_choco_updates(&output.merged_text());
+    if output.success || (output.exit_code == Some(2) && !updates.is_empty()) {
+        Ok(updates)
+    } else {
+        Err(UpdaterError::CommandFailed {
+            program: "choco".to_owned(),
+            code: output.exit_code,
+            stderr: output.merged_text().trim().to_owned(),
+        })
+    }
 }
 
 pub(super) fn chocolatey_apply_updates(
@@ -359,16 +394,21 @@ pub(super) fn msys2_apply_updates(
     _selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let mut args = vec!["-Syu", "--noconfirm"];
-    if !force_yes {
-        args.push("--needed");
-    }
+    let args = msys2_update_args(force_yes);
     let output = msys2_stream_pacman(&args, log_sender)?;
     if output.success {
         Ok(())
     } else {
         Err(msys2_pacman_error(output))
     }
+}
+
+fn msys2_update_args(force_yes: bool) -> Vec<&'static str> {
+    let mut args = vec!["-Syu", "--needed"];
+    if force_yes {
+        args.push("--noconfirm");
+    }
+    args
 }
 
 fn msys2_root_candidates() -> Vec<PathBuf> {
@@ -486,6 +526,50 @@ mod tests {
         assert!(reason.contains("прокси"));
         assert!(reason.contains("winget upgrade --id Kitware.CMake --exact"));
         assert!(!reason.contains("unknown error"));
+    }
+
+    #[test]
+    fn winget_check_distinguishes_no_upgrades_from_command_failure() {
+        let no_upgrades = CommandOutput {
+            stdout: "No installed package found matching input criteria.".to_owned(),
+            stderr: String::new(),
+            exit_code: Some(0x8a15002b_u32 as i32),
+            success: false,
+        };
+        assert!(winget_reports_no_upgrades(&no_upgrades));
+
+        let failure = CommandOutput {
+            stdout: String::new(),
+            stderr: "Failed to update source".to_owned(),
+            exit_code: Some(1),
+            success: false,
+        };
+        assert!(!winget_reports_no_upgrades(&failure));
+    }
+
+    #[test]
+    fn chocolatey_check_accepts_outdated_exit_code_but_reports_failures() {
+        let outdated = CommandOutput {
+            stdout: "git|2.0|3.0|false".to_owned(),
+            stderr: String::new(),
+            exit_code: Some(2),
+            success: false,
+        };
+        assert_eq!(parse_chocolatey_check_output(&outdated).unwrap().len(), 1);
+
+        let failure = CommandOutput {
+            stdout: String::new(),
+            stderr: "Unable to reach repository".to_owned(),
+            exit_code: Some(1),
+            success: false,
+        };
+        assert!(parse_chocolatey_check_output(&failure).is_err());
+    }
+
+    #[test]
+    fn msys2_only_suppresses_prompts_when_force_yes_is_enabled() {
+        assert_eq!(msys2_update_args(false), ["-Syu", "--needed"]);
+        assert_eq!(msys2_update_args(true), ["-Syu", "--needed", "--noconfirm"]);
     }
 
     #[test]

@@ -20,7 +20,9 @@ impl GuiApp {
             ui.group(|ui| {
                 ui.set_min_width(320.0);
                 ui.horizontal_wrapped(|ui| {
-                    let response = if module.updates.is_empty() {
+                    let response = if module.updates.is_empty()
+                        || !module.supports_package_selection
+                    {
                         ui.checkbox(&mut module.selected, "")
                     } else {
                         let selected_count = module
@@ -45,6 +47,11 @@ impl GuiApp {
                         response
                     };
                     if response.changed() {
+                        if !module.supports_package_selection {
+                            for update in &mut module.updates {
+                                update.selected = module.selected;
+                            }
+                        }
                         *selection_changed = true;
                     }
                     ui.heading(format!("{} ({:?})", module.name, module.kind));
@@ -70,13 +77,13 @@ impl GuiApp {
                     }
                 }
 
-                if !module.updates.is_empty() {
+                if !module.updates.is_empty() && module.supports_package_selection {
+                    let detail_lines = module.detail_lines();
                     let selected_updates_count = module
                         .updates
                         .iter()
                         .filter(|update| update.selected)
                         .count();
-                    let detail_lines = module.detail_lines();
                     ui.small(format!(
                         "Выбрано приложений: {}/{}",
                         selected_updates_count,
@@ -104,6 +111,11 @@ impl GuiApp {
                                 *selection_changed = true;
                             }
                         });
+                } else if !module.updates.is_empty() {
+                    ui.small(format!(
+                        "Обновление выполняется целиком; найдено пакетов: {}",
+                        module.updates.len()
+                    ));
                 }
             });
         });

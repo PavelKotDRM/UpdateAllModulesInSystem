@@ -5,10 +5,12 @@ use crate::system;
 use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command, stream_command};
 use crate::updaters::common::{ensure_success, stream_checked};
 use crate::updaters::http_client::http_client;
+#[cfg(unix)]
+use semver::Version;
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
 const SELF_UPDATE_SCOPE: &str = "самообновление";
@@ -137,11 +139,7 @@ pub(super) fn node_installed() -> bool {
 }
 
 pub(super) fn node_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    let current_output = capture_command("node", &["--version".to_owned()])?;
-    ensure_success("node", &current_output)?;
-    let current = version_from_output(&current_output.stdout).ok_or_else(|| {
-        UpdaterError::Message("node: не удалось определить текущую версию".to_owned())
-    })?;
+    let current = current_node_version()?;
 
     let releases: Value = http_client()?
         .get(NODE_RELEASE_INDEX_URL)
@@ -157,6 +155,38 @@ pub(super) fn node_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     } else {
         Ok(vec![PackageUpdate::new("node", current, latest)])
     }
+}
+
+fn current_node_version() -> Result<String, UpdaterError> {
+    #[cfg(unix)]
+    {
+        let node_path = find_command("node").unwrap_or_default();
+        if node_path.to_ascii_lowercase().contains("nvm")
+            && let Some(script) = nvm_script_path(&node_path)
+            && let Some(nvm_dir) = script.parent()
+            && nvm_dir.join("alias/default").is_file()
+        {
+            let (bash, args) = nvm_shell_command(&script, &["version", "default"])?;
+            let output = capture_command(&bash, &args)?;
+            ensure_success("nvm", &output)?;
+            let default_version = output.merged_text().trim();
+            if !default_version.eq_ignore_ascii_case("n/a")
+                && !default_version.eq_ignore_ascii_case("system")
+            {
+                let version = version_from_output(&output.stdout)
+                    .filter(|version| Version::parse(version).is_ok());
+                return version.ok_or_else(|| {
+                    UpdaterError::Message("node: nvm вернул некорректную версию default".to_owned())
+                });
+            }
+        }
+    }
+
+    let current_output = capture_command("node", &["--version".to_owned()])?;
+    ensure_success("node", &current_output)?;
+    version_from_output(&current_output.stdout).ok_or_else(|| {
+        UpdaterError::Message("node: не удалось определить текущую версию".to_owned())
+    })
 }
 
 fn latest_node_version(releases: &Value) -> Option<String> {
@@ -185,10 +215,7 @@ pub(super) fn node_apply_updates(
         node_install_method_label(method)
     ));
     match method {
-        NodeInstallMethod::Nvm => {
-            stream_checked("nvm", &["install".to_owned(), update.available_version.clone()], log_sender)?;
-            stream_checked("nvm", &["use".to_owned(), update.available_version.clone()], log_sender)
-        }
+        NodeInstallMethod::Nvm => apply_nvm_update(&update.available_version, log_sender),
         NodeInstallMethod::Fnm => stream_checked(
             "fnm",
             &[
@@ -227,7 +254,9 @@ pub(super) fn node_apply_updates(
 fn detect_node_install_method() -> NodeInstallMethod {
     let node_path = find_command("node").unwrap_or_default();
     let lower_path = node_path.to_ascii_lowercase();
-    if find_command("nvm").is_some() || lower_path.contains("nvm") {
+    if find_command("nvm").is_some()
+        || (lower_path.contains("nvm") && nvm_script_path(&node_path).is_some())
+    {
         return NodeInstallMethod::Nvm;
     }
     if find_command("fnm").is_some() || lower_path.contains("fnm") {
@@ -245,6 +274,76 @@ fn detect_node_install_method() -> NodeInstallMethod {
         return NodeInstallMethod::Winget(package_id);
     }
     NodeInstallMethod::Unknown
+}
+
+fn nvm_script_path(node_path: &str) -> Option<PathBuf> {
+    let nvm_dir = std::env::var_os("NVM_DIR").map(PathBuf::from);
+    find_nvm_script(Path::new(node_path), nvm_dir.as_deref())
+}
+
+fn find_nvm_script(node_path: &Path, nvm_dir: Option<&Path>) -> Option<PathBuf> {
+    nvm_dir
+        .map(|directory| directory.join("nvm.sh"))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            node_path
+                .ancestors()
+                .map(|directory| directory.join("nvm.sh"))
+                .find(|path| path.is_file())
+        })
+}
+
+#[cfg(any(unix, test))]
+fn nvm_shell_args(nvm_dir: &Path, nvm_script: &Path, args: &[&str]) -> Vec<String> {
+    let mut shell_args = vec![
+        "-c".to_owned(),
+        "export NVM_DIR=\"$1\"; . \"$2\"; shift 2; nvm \"$@\"".to_owned(),
+        "nvm".to_owned(),
+        nvm_dir.to_string_lossy().into_owned(),
+        nvm_script.to_string_lossy().into_owned(),
+    ];
+    shell_args.extend(args.iter().map(|argument| (*argument).to_owned()));
+    shell_args
+}
+
+#[cfg(unix)]
+fn apply_nvm_update(version: &str, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+    let node_path = find_command("node")
+        .ok_or_else(|| UpdaterError::Message("node: команда не найдена для nvm".to_owned()))?;
+    let script = nvm_script_path(&node_path).ok_or_else(|| {
+        UpdaterError::Message(
+            "node: обнаружен nvm, но не найден его скрипт nvm.sh; задайте NVM_DIR или проверьте путь node"
+                .to_owned(),
+        )
+    })?;
+
+    for command_args in [vec!["install", version], vec!["alias", "default", version]] {
+        let (bash, args) = nvm_shell_command(&script, &command_args)?;
+        let output = stream_command(&bash, &args, log_sender)?;
+        ensure_success("nvm", &output)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn nvm_shell_command(script: &Path, args: &[&str]) -> Result<(String, Vec<String>), UpdaterError> {
+    let nvm_dir = script
+        .parent()
+        .ok_or_else(|| UpdaterError::Message("node: некорректный путь к nvm.sh".to_owned()))?;
+    let bash = find_command("bash").ok_or_else(|| {
+        UpdaterError::Message("node: для запуска nvm.sh требуется bash".to_owned())
+    })?;
+    Ok((bash, nvm_shell_args(nvm_dir, script, args)))
+}
+
+#[cfg(not(unix))]
+fn apply_nvm_update(version: &str, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
+    stream_checked(
+        "nvm",
+        &["install".to_owned(), version.to_owned()],
+        log_sender,
+    )?;
+    stream_checked("nvm", &["use".to_owned(), version.to_owned()], log_sender)
 }
 
 fn winget_node_package() -> Option<&'static str> {
@@ -633,6 +732,50 @@ mod tests {
         assert_eq!(
             node_msi_url("26.5.0", "x64"),
             "https://nodejs.org/dist/v26.5.0/node-v26.5.0-x64.msi"
+        );
+    }
+
+    #[test]
+    fn finds_nvm_script_from_the_active_node_installation() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let nvm_dir = std::env::temp_dir()
+            .join(format!("update-all-modules-nvm-{unique}"))
+            .join(".nvm");
+        let bin_dir = nvm_dir
+            .join("versions")
+            .join("node")
+            .join("v24.0.0")
+            .join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let script = nvm_dir.join("nvm.sh");
+        std::fs::write(&script, "# nvm test script").unwrap();
+
+        assert_eq!(
+            find_nvm_script(&bin_dir.join("node"), None),
+            Some(script.clone())
+        );
+
+        std::fs::remove_dir_all(nvm_dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn nvm_shell_arguments_keep_versions_out_of_the_command_string() {
+        let nvm_dir = std::path::Path::new("home/.nvm");
+        let script = nvm_dir.join("nvm.sh");
+        let args = nvm_shell_args(nvm_dir, &script, &["install", "24.0.0; echo unsafe"]);
+
+        assert_eq!(
+            &args[2..],
+            &[
+                "nvm".to_owned(),
+                "home/.nvm".to_owned(),
+                script.to_string_lossy().into_owned(),
+                "install".to_owned(),
+                "24.0.0; echo unsafe".to_owned()
+            ]
         );
     }
 }

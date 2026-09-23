@@ -108,6 +108,9 @@ pub struct ModuleSnapshot {
     pub selected: bool,
     /// Требуются ли повышенные привилегии для обновления.
     pub requires_elevation: bool,
+    /// Поддерживает ли модуль безопасный выбор отдельных обновлений.
+    #[serde(default = "package_selection_supported_by_default")]
+    pub supports_package_selection: bool,
     /// Текущее состояние проверки.
     pub status: ModuleStatus,
     /// Список доступных обновлений внутри модуля.
@@ -123,6 +126,7 @@ impl ModuleSnapshot {
             installed: false,
             selected: true,
             requires_elevation,
+            supports_package_selection: true,
             status: ModuleStatus::NotFound,
             updates: Vec::new(),
         }
@@ -160,6 +164,10 @@ impl ModuleSnapshot {
             })
             .collect()
     }
+}
+
+fn package_selection_supported_by_default() -> bool {
+    true
 }
 
 #[cfg(test)]

@@ -9,6 +9,17 @@ const ELEVATION_STATE_PREFIX: &str = "update_all_modules_scan_";
 const ELEVATION_STATE_SUFFIX: &str = ".json";
 const ELEVATION_READY_PREFIX: &str = "update_all_modules_elevated_";
 
+fn forwarded_arguments(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Vec<std::ffi::OsString> {
+    let arguments = arguments.into_iter().collect::<Vec<_>>();
+    if arguments.is_empty() {
+        vec!["--gui".into()]
+    } else {
+        arguments
+    }
+}
+
 /// Проверяет, запущен ли процесс с правами администратора или `root`.
 pub fn is_admin() -> bool {
     is_admin_impl()
@@ -102,8 +113,8 @@ fn validate_elevation_file(
     Ok(())
 }
 
-/// Повторно запускает текущий процесс с повышенными правами для полного
-/// повторного сканирования.
+/// Повторно запускает текущий процесс с повышенными правами, сохраняя его
+/// фильтры модулей.
 ///
 /// # Errors
 /// Возвращает ошибку, если исполняемый файл не найден, средство повышения прав
@@ -165,24 +176,10 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
 
 #[cfg(target_os = "windows")]
 fn elevated_arguments(elevation_state_file: &Path) -> String {
-    let mut raw_arguments = std::env::args_os().skip(1).peekable();
-    let mut arguments = Vec::new();
-
-    while let Some(argument) = raw_arguments.next() {
-        let argument = argument.to_string_lossy();
-        if argument == "--only" {
-            raw_arguments.next();
-            continue;
-        }
-        if argument.starts_with("--only=") {
-            continue;
-        }
-        arguments.push(quote_windows_argument(&argument));
-    }
-
-    if arguments.is_empty() {
-        arguments.push("--gui".to_owned());
-    }
+    let mut arguments = forwarded_arguments(std::env::args_os().skip(1))
+        .iter()
+        .map(|argument| quote_windows_argument(&argument.to_string_lossy()))
+        .collect::<Vec<_>>();
     arguments.push("--elevation-state-file".to_owned());
     arguments.push(quote_windows_argument(
         &elevation_state_file.to_string_lossy(),
@@ -265,23 +262,7 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
         }
     }
     command.arg(executable);
-    let mut raw_arguments = std::env::args_os().skip(1).peekable();
-    let mut arguments = Vec::new();
-    while let Some(argument) = raw_arguments.next() {
-        if argument == "--only" {
-            raw_arguments.next();
-            continue;
-        }
-        if argument.to_string_lossy().starts_with("--only=") {
-            continue;
-        }
-        arguments.push(argument);
-    }
-    if arguments.is_empty() {
-        command.arg("--gui");
-    } else {
-        command.args(arguments);
-    }
+    command.args(forwarded_arguments(std::env::args_os().skip(1)));
     command
         .arg("--elevation-state-file")
         .arg(elevation_state_file);
@@ -350,6 +331,31 @@ mod tests {
     use super::{validate_elevation_ready_file, validate_elevation_state_file};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn elevated_restart_preserves_module_filters() {
+        let arguments = super::forwarded_arguments(
+            ["--gui", "--only", "apt-get"]
+                .into_iter()
+                .map(std::ffi::OsString::from),
+        );
+
+        assert_eq!(
+            arguments,
+            ["--gui", "--only", "apt-get"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn elevated_restart_defaults_to_gui_when_no_arguments_were_provided() {
+        assert_eq!(
+            super::forwarded_arguments(std::iter::empty::<std::ffi::OsString>()),
+            vec![std::ffi::OsString::from("--gui")]
+        );
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

@@ -30,6 +30,7 @@ thread_local! {
 struct CancellationState {
     cancelled: AtomicBool,
     active_processes: Mutex<HashSet<u32>>,
+    termination_errors: Mutex<Vec<String>>,
 }
 
 /// Потокобезопасный сигнал отмены очереди и активных дочерних процессов.
@@ -39,17 +40,28 @@ pub struct UpdateCancellation {
 }
 
 impl UpdateCancellation {
-    /// Запрашивает остановку очереди и завершает зарегистрированные процессы.
-    pub fn cancel(&self) {
+    /// Запрашивает остановку очереди и завершает зарегистрированные деревья процессов.
+    ///
+    /// Возвращает сообщения о процессах, которые не удалось завершить.
+    pub fn cancel(&self) -> Vec<String> {
         self.state.cancelled.store(true, Ordering::Release);
-        let active_processes = self
+        let process_ids = self
             .state
             .active_processes
             .lock()
-            .expect("active processes mutex poisoned");
-        for &process_id in active_processes.iter() {
-            terminate_process(process_id);
+            .expect("active processes mutex poisoned")
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut errors = Vec::new();
+        for process_id in process_ids {
+            if let Err(error) = terminate_process_tree(process_id) {
+                errors.push(format!(
+                    "не удалось завершить дерево процесса {process_id}: {error}"
+                ));
+            }
         }
+        errors
     }
 
     /// Возвращает `true`, если пользователь запросил отмену.
@@ -58,20 +70,42 @@ impl UpdateCancellation {
     }
 
     fn register_process(&self, process_id: u32) -> ProcessRegistration {
-        let mut active_processes = self
-            .state
-            .active_processes
-            .lock()
-            .expect("active processes mutex poisoned");
-        if self.is_cancelled() {
-            terminate_process(process_id);
-        } else {
-            active_processes.insert(process_id);
+        let terminate_immediately = {
+            let mut active_processes = self
+                .state
+                .active_processes
+                .lock()
+                .expect("active processes mutex poisoned");
+            if self.is_cancelled() {
+                true
+            } else {
+                active_processes.insert(process_id);
+                false
+            }
+        };
+        if terminate_immediately && let Err(error) = terminate_process_tree(process_id) {
+            self.state
+                .termination_errors
+                .lock()
+                .expect("termination errors mutex poisoned")
+                .push(format!(
+                    "не удалось завершить дерево процесса {process_id}: {error}"
+                ));
         }
         ProcessRegistration {
             cancellation: self.clone(),
             process_id,
         }
+    }
+
+    pub(crate) fn take_termination_errors(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .state
+                .termination_errors
+                .lock()
+                .expect("termination errors mutex poisoned"),
+        )
     }
 }
 
@@ -114,36 +148,74 @@ fn register_active_process(process_id: u32) -> Option<ProcessRegistration> {
 }
 
 #[cfg(target_os = "windows")]
-fn terminate_process(process_id: u32) {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
-
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, process_id) };
-    if !handle.is_null() {
-        unsafe {
-            TerminateProcess(handle, 1);
-            CloseHandle(handle);
-        }
+fn terminate_process_tree(process_id: u32) -> io::Result<()> {
+    let output = Command::new("taskkill")
+        .args(["/T", "/F", "/PID"])
+        .arg(process_id.to_string())
+        .output()?;
+    if output.status.success() {
+        return Ok(());
     }
+
+    let details = format!(
+        "{}{}",
+        decode_bytes(&output.stdout),
+        decode_bytes(&output.stderr)
+    );
+    Err(io::Error::other(format!(
+        "taskkill завершился с кодом {:?}: {}",
+        output.status.code(),
+        details.trim()
+    )))
 }
 
 #[cfg(unix)]
-fn terminate_process(process_id: u32) {
+fn terminate_process_tree(process_id: u32) -> io::Result<()> {
     unsafe extern "C" {
         fn kill(process_id: i32, signal: i32) -> i32;
     }
 
     const SIGTERM: i32 = 15;
-    let _ = unsafe { kill(process_id as i32, SIGTERM) };
+    let process_group = i32::try_from(process_id)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    if unsafe { kill(-process_group, SIGTERM) } == 0 {
+        return Ok(());
+    }
+
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::NotFound {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 #[cfg(not(any(target_os = "windows", unix)))]
-fn terminate_process(_process_id: u32) {}
+fn terminate_process_tree(_process_id: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "остановка дерева процессов не поддерживается на этой платформе",
+    ))
+}
+
+fn configure_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+}
 
 /// Трейт, описывающий жизненный цикл обновлятора конкретного менеджера пакетов.
 pub trait Updater: Send + Sync {
     /// Возвращает стабильное имя обновлятора.
     fn name(&self) -> &'static str;
+    /// Указывает, можно ли безопасно обновлять выбранные пакеты отдельно.
+    fn supports_package_selection(&self) -> bool {
+        true
+    }
     /// Проверяет, доступен ли соответствующий менеджер пакетов в системе.
     fn is_installed(&self) -> bool;
     /// Собирает список доступных обновлений.
@@ -330,15 +402,16 @@ pub fn capture_command(program: &str, args: &[String]) -> Result<CommandOutput, 
 
 fn capture_system_command(program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
     let executable = find_command(program).unwrap_or_else(|| program.to_owned());
-    let child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| UpdaterError::SpawnError {
-            program: program.to_owned(),
-            source,
-        })?;
+        .stderr(Stdio::piped());
+    configure_process_group(&mut command);
+    let child = command.spawn().map_err(|source| UpdaterError::SpawnError {
+        program: program.to_owned(),
+        source,
+    })?;
     let _registration = register_active_process(child.id());
     let output = child
         .wait_with_output()
@@ -382,15 +455,16 @@ fn stream_system_command(
     log_sender: &Sender<String>,
 ) -> Result<CommandOutput, UpdaterError> {
     let executable = find_command(program).unwrap_or_else(|| program.to_owned());
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| UpdaterError::SpawnError {
-            program: program.to_owned(),
-            source,
-        })?;
+        .stderr(Stdio::piped());
+    configure_process_group(&mut command);
+    let mut child = command.spawn().map_err(|source| UpdaterError::SpawnError {
+        program: program.to_owned(),
+        source,
+    })?;
     let _registration = register_active_process(child.id());
 
     let stdout = child
@@ -645,6 +719,16 @@ bar 2.0 3.0\n\
     }
 
     #[test]
+    fn heuristic_parse_updates_reads_pacman_arrow_versions() {
+        let updates = heuristic_parse_updates("pacman", "linux 6.8.1-1 -> 6.8.2-1\n");
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].current_version, "6.8.1-1");
+        assert_eq!(updates[0].available_version, "6.8.2-1");
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
     fn cancellation_terminates_active_process() {
         let cancellation = UpdateCancellation::default();
         let worker_cancellation = cancellation.clone();
@@ -660,13 +744,11 @@ bar 2.0 3.0\n\
                     vec![
                         "-NoProfile".to_owned(),
                         "-Command".to_owned(),
-                        "Start-Sleep -Seconds 30".to_owned(),
+                        "Start-Process -FilePath $env:ComSpec -ArgumentList '/c ping 127.0.0.1 -n 30 > nul' -WindowStyle Hidden; Start-Sleep -Seconds 30".to_owned(),
                     ],
                 );
                 #[cfg(unix)]
-                let (program, args) = ("sleep", vec!["30".to_owned()]);
-                #[cfg(not(any(target_os = "windows", unix)))]
-                let (program, args) = ("echo", vec!["unsupported".to_owned()]);
+                let (program, args) = ("sh", vec!["-c".to_owned(), "sleep 30 & wait".to_owned()]);
 
                 capture_command(program, &args)
             })
@@ -684,7 +766,7 @@ bar 2.0 3.0\n\
             thread::yield_now();
         }
 
-        cancellation.cancel();
+        assert!(cancellation.cancel().is_empty());
         let output = handle
             .join()
             .expect("command thread should not panic")

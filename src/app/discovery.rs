@@ -132,6 +132,7 @@ pub fn scan_updater(
     requires_elevation: bool,
 ) -> ModuleSnapshot {
     let mut snapshot = ModuleSnapshot::new(updater.name(), kind, requires_elevation);
+    snapshot.supports_package_selection = updater.supports_package_selection();
 
     if !updater.is_installed() {
         snapshot.status = ModuleStatus::NotFound;

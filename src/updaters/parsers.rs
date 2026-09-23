@@ -56,6 +56,112 @@ pub(super) fn parse_pkcon_updates(text: &str) -> Vec<PackageUpdate> {
         .collect()
 }
 
+pub(super) fn parse_dnf_updates(text: &str, manager: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line
+                    .to_ascii_lowercase()
+                    .starts_with("last metadata expiration")
+                && !line.to_ascii_lowercase().starts_with("available upgrades")
+                && !line.to_ascii_lowercase().starts_with("obsoleting packages")
+        })
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let name = fields.next()?;
+            let available = fields.next()?;
+            let _repository = fields.next()?;
+            let name_lower = name.to_ascii_lowercase();
+            if matches!(
+                name_lower.as_str(),
+                "name" | "package" | "last" | "error:" | "warning:"
+            ) || available.eq_ignore_ascii_case("version")
+                || !available
+                    .chars()
+                    .any(|character| character.is_ascii_digit())
+            {
+                return None;
+            }
+
+            Some(PackageUpdate::new(
+                format!("{manager}:{name}"),
+                "installed",
+                available,
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn parse_zypper_updates(text: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .filter_map(|line| {
+            let fields = line.split('|').map(str::trim).collect::<Vec<_>>();
+            if fields.len() < 5 {
+                return None;
+            }
+            let offset = usize::from(fields.len() >= 6 && fields[0].chars().count() <= 1);
+            let repository = *fields.get(offset)?;
+            let name = *fields.get(offset + 1)?;
+            let current = *fields.get(offset + 2)?;
+            let available = *fields.get(offset + 3)?;
+
+            (!name.is_empty()
+                && !repository.eq_ignore_ascii_case("repository")
+                && !name.eq_ignore_ascii_case("name")
+                && !current.is_empty()
+                && !available.is_empty()
+                && !current.eq_ignore_ascii_case("current version"))
+            .then(|| PackageUpdate::new(format!("zypper:{name}"), current, available))
+        })
+        .collect()
+}
+
+pub(super) fn parse_snap_updates(text: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with("all snaps")
+                || lower.starts_with("error")
+                || lower.starts_with("warning")
+            {
+                return None;
+            }
+            let mut fields = line.split_whitespace();
+            let name = fields.next()?;
+            let available = fields.next()?;
+
+            if name.eq_ignore_ascii_case("name") || available.eq_ignore_ascii_case("version") {
+                return None;
+            }
+
+            Some(PackageUpdate::new(
+                format!("snap:{name}"),
+                "installed",
+                available,
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn parse_rustup_updates(text: &str) -> Vec<PackageUpdate> {
+    text.lines()
+        .filter_map(|line| {
+            let (toolchain, versions) = line.split_once(" - Update available")?;
+            let versions = versions.trim().strip_prefix(':')?.trim();
+            let (current, available) = versions.split_once("->")?;
+            let current = current.split_whitespace().next()?;
+            let available = available.split_whitespace().next()?;
+
+            (!toolchain.trim().is_empty() && !current.is_empty() && !available.is_empty()).then(
+                || PackageUpdate::new(format!("rustup:{}", toolchain.trim()), current, available),
+            )
+        })
+        .collect()
+}
+
 /// Разбирает машинный формат `brew outdated --json=v2`.
 pub(super) fn parse_brew_updates(text: &str) -> Result<Vec<PackageUpdate>, UpdaterError> {
     #[derive(Deserialize)]
@@ -75,11 +181,15 @@ pub(super) fn parse_brew_updates(text: &str) -> Result<Vec<PackageUpdate>, Updat
     }
 
     let outdated = serde_json::from_str::<BrewOutdated>(text)?;
-    Ok(outdated
+    let formulae = outdated
         .formulae
         .into_iter()
-        .chain(outdated.casks)
-        .filter_map(|package| {
+        .map(|package| ("formula", package));
+    let casks = outdated.casks.into_iter().map(|package| ("cask", package));
+
+    Ok(formulae
+        .chain(casks)
+        .filter_map(|(kind, package)| {
             let installed = package.installed_versions.last()?.clone();
             (installed != package.current_version).then(|| {
                 PackageUpdate::new(
@@ -87,6 +197,7 @@ pub(super) fn parse_brew_updates(text: &str) -> Result<Vec<PackageUpdate>, Updat
                     installed,
                     package.current_version,
                 )
+                .with_scope(kind)
             })
         })
         .collect())
@@ -379,6 +490,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_dnf_updates_reads_package_versions_and_skips_headers() {
+        let text = "\
+Last metadata expiration check: 0:05:11 ago\n\
+Package                 Version       Repository\n\
+git.x86_64               2.45.1-1      updates\n\
+";
+
+        let updates = parse_dnf_updates(text, "dnf");
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "dnf:git.x86_64");
+        assert_eq!(updates[0].current_version, "installed");
+        assert_eq!(updates[0].available_version, "2.45.1-1");
+    }
+
+    #[test]
+    fn parse_zypper_updates_handles_status_and_plain_tables() {
+        let text = "\
+S | Repository | Name | Current Version | Available Version | Arch\n\
+-+------------+------+-----------------+-------------------+------\n\
+v | repo-oss   | vim  | 9.1.0-1         | 9.1.1-1           | x86_64\n\
+";
+
+        let updates = parse_zypper_updates(text);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "zypper:vim");
+        assert_eq!(updates[0].current_version, "9.1.0-1");
+        assert_eq!(updates[0].available_version, "9.1.1-1");
+    }
+
+    #[test]
+    fn parse_snap_updates_reads_selected_snap_names() {
+        let text = "\
+Name      Version        Rev  Tracking       Publisher  Notes\n\
+firefox   140.0.1-2      6100 latest/stable  mozilla✓   -\n\
+";
+
+        let updates = parse_snap_updates(text);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "snap:firefox");
+        assert_eq!(updates[0].available_version, "140.0.1-2");
+    }
+
+    #[test]
+    fn parse_rustup_updates_reads_toolchain_versions() {
+        let text = "\
+stable-x86_64-unknown-linux-gnu - Update available : 1.90.0 (hash-old 2026-08-01) -> 1.91.0 (hash-new 2026-09-01)\n\
+nightly-x86_64-unknown-linux-gnu - Up to date : 1.92.0-nightly (hash 2026-09-20)\n\
+";
+
+        let updates = parse_rustup_updates(text);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "rustup:stable-x86_64-unknown-linux-gnu");
+        assert_eq!(updates[0].current_version, "1.90.0");
+        assert_eq!(updates[0].available_version, "1.91.0");
+    }
+
+    #[test]
     fn parse_apt_updates_reads_list_versions() {
         let text = "Listing...\ncode/stable 1.102.2-1753187809 amd64 [upgradable from: 1.101.2-1750797935]\n";
 
@@ -471,6 +643,8 @@ mod tests {
         assert_eq!(updates[0].available_version, "2.46.0");
         assert_eq!(updates[1].name, "brew:firefox");
         assert_eq!(updates[1].available_version, "129.0");
+        assert_eq!(updates[0].scope.as_deref(), Some("formula"));
+        assert_eq!(updates[1].scope.as_deref(), Some("cask"));
     }
 
     #[test]

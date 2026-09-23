@@ -76,6 +76,8 @@ pub fn render_cli_table(modules: &[ModuleSnapshot]) -> String {
             module.status_label(),
             if module.updates.is_empty() {
                 "-".to_owned()
+            } else if !module.supports_package_selection {
+                format!("Полное обновление ({} пакетов)", module.updates.len())
             } else {
                 module
                     .updates
@@ -172,12 +174,7 @@ pub fn run_updates_with_progress_cancellable(
     let mut parallel_jobs = Vec::new();
 
     for (index, module) in modules.iter().enumerate() {
-        let selected_updates: Vec<_> = module
-            .updates
-            .iter()
-            .filter(|update| update.selected)
-            .cloned()
-            .collect();
+        let selected_updates = selected_updates_for_module(module);
 
         if let Some(reason) = skip_update_reason(module, &selected_updates) {
             let _ = log_sender.send(format_module_log(
@@ -276,6 +273,10 @@ pub fn run_updates_with_progress_cancellable(
             .map(|(_, module_name, outcome)| (module_name, outcome)),
     );
 
+    for error in cancellation.take_termination_errors() {
+        let _ = log_sender.send(format!("[system] {error}"));
+    }
+
     results
 }
 
@@ -284,6 +285,19 @@ struct UpdateJob {
     module_name: String,
     updater: Box<dyn Updater>,
     selected_updates: Vec<crate::model::PackageUpdate>,
+}
+
+fn selected_updates_for_module(module: &ModuleSnapshot) -> Vec<crate::model::PackageUpdate> {
+    if module.supports_package_selection {
+        module
+            .updates
+            .iter()
+            .filter(|update| update.selected)
+            .cloned()
+            .collect()
+    } else {
+        module.updates.clone()
+    }
 }
 
 fn should_run_update_in_parallel(module: &ModuleSnapshot) -> bool {
@@ -869,5 +883,20 @@ mod tests {
         assert_eq!(worker_count_for(0), 0);
         assert!(worker_count_for(1) >= 1);
         assert!(worker_count_for(128) <= MAX_PARALLEL_WORKERS);
+    }
+
+    #[test]
+    fn package_selection_is_ignored_only_for_full_system_updaters() {
+        let mut module = ModuleSnapshot::new("apt", ModuleKind::System, true);
+        module.updates = vec![
+            PackageUpdate::new("apt:first", "1.0", "2.0"),
+            PackageUpdate::new("apt:second", "1.0", "2.0"),
+        ];
+        module.updates[1].selected = false;
+
+        assert_eq!(selected_updates_for_module(&module).len(), 1);
+
+        module.supports_package_selection = false;
+        assert_eq!(selected_updates_for_module(&module).len(), 2);
     }
 }

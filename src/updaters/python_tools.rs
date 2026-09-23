@@ -5,7 +5,10 @@ use crate::system;
 use crate::updater::{
     CommandOutput, UpdaterError, capture_command, command_exists, stream_command,
 };
-use crate::updaters::common::{heuristic_check, stream_checked, stream_checked_refs};
+use crate::updaters::common::{
+    check_with_parser, ensure_success, selected_package_names, stream_checked,
+};
+use crate::updaters::parsers::parse_rustup_updates;
 use serde::Deserialize;
 use std::sync::mpsc::Sender;
 
@@ -64,6 +67,7 @@ pub(super) fn parse_pip_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
         "--outdated".to_owned(),
         "--format=json".to_owned(),
     ])?;
+    ensure_success("python -m pip", &output)?;
     let packages: Vec<PipPackage> = serde_json::from_str(&output.stdout)?;
     Ok(packages
         .into_iter()
@@ -179,6 +183,7 @@ pub(super) fn parse_uv_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
         "--outdated".to_owned(),
         "--format=json".to_owned(),
     ])?;
+    ensure_success("uv pip", &output)?;
     let packages: Vec<UvPackage> = serde_json::from_str(&output.stdout)?;
     Ok(packages
         .into_iter()
@@ -189,6 +194,7 @@ pub(super) fn parse_uv_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
 pub(super) fn check_uv_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     let current = current_uv_version()?;
     let output = run_uv_self_capture(&["update".to_owned(), "--dry-run".to_owned()])?;
+    ensure_success("uv", &output)?;
     let versions = extract_uv_versions(&output.merged_text());
 
     if versions.is_empty() {
@@ -235,6 +241,7 @@ pub(super) fn apply_uv_updates(
 
 fn current_uv_version() -> Result<String, UpdaterError> {
     let output = run_uv_self_capture(&["version".to_owned(), "--short".to_owned()])?;
+    ensure_success("uv", &output)?;
     let version = output.stdout.trim();
     if version.is_empty() {
         return Err(UpdaterError::Message(
@@ -268,17 +275,24 @@ fn extract_uv_versions(text: &str) -> Vec<String> {
 
 pub(super) fn apply_rustup_updates(
     _force_yes: bool,
-    _selected_updates: &[PackageUpdate],
+    selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    stream_checked_refs("rustup", &["update"], log_sender)
+    let mut args = vec!["update".to_owned()];
+    args.extend(selected_package_names("rustup", selected_updates)?);
+    stream_checked("rustup", &args, log_sender)
 }
 
 pub(super) fn check_rustup_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     if !system::command_available("rustup") {
         return Ok(Vec::new());
     }
-    heuristic_check("rustup", &["check"], "rustup")
+    check_with_parser(
+        "rustup",
+        &["check".to_owned()],
+        "rustup",
+        parse_rustup_updates,
+    )
 }
 
 pub(super) fn installed_rustup() -> bool {

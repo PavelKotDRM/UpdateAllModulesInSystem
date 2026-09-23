@@ -50,7 +50,11 @@ fn parse_update_line(manager: &'static str, line: &str) -> Option<PackageUpdate>
     }
 
     let current = tokens.get(1).copied().unwrap_or("?");
-    let available = tokens.get(2).copied().unwrap_or("?");
+    let available = if tokens.get(2) == Some(&"->") {
+        tokens.get(3).copied().unwrap_or("?")
+    } else {
+        tokens.get(2).copied().unwrap_or("?")
+    };
     Some(PackageUpdate::new(
         format!("{manager}:{name_token}"),
         current,

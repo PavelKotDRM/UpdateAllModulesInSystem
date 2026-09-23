@@ -21,6 +21,7 @@ The project supports two operating modes:
 - Updates the editors themselves through the system package manager (`winget`, `choco`, `apt`, `brew`, and others).
 - Supports `rustup`.
 - Supports `msys2` through `pacman` on Windows.
+- Applies package-level selections where the updater supports targeted upgrades; `pacman`, MSYS2, `apk`, `xbps`, and `emerge` clearly use full-system updates without misleading package checkboxes.
 - Provides tabular CLI output.
 - Scans modules in parallel.
 - Updates independent modules in parallel with a limited number of worker threads.
@@ -138,7 +139,7 @@ The graphical mode provides:
 - a button to check for updates;
 - a button to update selected modules;
 - a button to update all modules;
-- a cancel button that stops the queue and terminates already started child processes;
+- a cancel button that stops the queue and terminates already started process trees;
 - a module selection menu with checkboxes for precise control over what is updated;
 - `selected/total` and `with updates/total` counters;
 - persistence of selected modules between GUI restarts;
@@ -148,7 +149,7 @@ The graphical mode provides:
 - hidden unavailable modules by default;
 - a setting to show unavailable modules;
 - a status list of detected package managers and tools;
-- expandable update details with application checkboxes inside each module;
+- expandable update details with package checkboxes where targeted updates are supported; full-system-only managers show an explicit notice instead;
 - a dedicated logs tab with expandable groups by module;
 - export of logs grouped by module to a text file;
 - automatic status rescanning after an update finishes;
@@ -252,12 +253,24 @@ The compiled binary archives for the supported platforms will then appear in Git
 - A missing global `npm` directory is treated as an empty global installation rather than a check failure. The npm 12 response containing a version in a single-element JSON array is also supported.
 - The latest Node.js version is queried from the official `https://nodejs.org/dist/index.json`.
 - Requests to Node.js, Visual Studio Marketplace, and Open VSX share an HTTP client with a 10-second connection timeout and a 120-second overall request timeout.
-- The Node.js installation method is detected from available managers, the `node` path, and the Windows MSI registry entry. Supported methods are `nvm`, `fnm`, `winget`, Homebrew, and the official MSI. For MSI installations, the required installer is downloaded from `nodejs.org` and launched through `msiexec /passive /norestart`.
+- The Node.js installation method is detected from available managers, the `node` path, and the Windows MSI registry entry. Supported methods are `nvm`, `fnm`, `winget`, Homebrew, and the official MSI. On Unix, `nvm` is loaded from `nvm.sh` in a Bash subprocess and the updated version becomes the default alias. For MSI installations, the required installer is downloaded from `nodejs.org` and launched through `msiexec /passive /norestart`.
+- Package-level selection is passed to targeted package-manager commands. Updaters that perform a full system transaction (`pacman`, MSYS2, `apk`, `xbps`, and `emerge`) show a whole-system notice instead of per-package checkboxes.
 - Extension versions for VS Code and VS Code Insiders are queried in batches from Visual Studio Marketplace, taking the platform and stable channel into account; Open VSX is used for the other supported editors.
 - Each selected editor extension is updated independently. If an individual extension is unavailable in the registry, the remaining extensions are still updated, and the final error lists the affected extensions.
 - VS Code profiles are detected from local user data. Extensions are checked and installed separately for each existing profile.
 - On Windows, non-UTF-8 output from external utilities can be decoded using `WINDOWS-1251`, `CP866`, with lossy UTF-8 as a fallback.
 - The module order in the final table and update results remains the same as in the updater registry, even when the tasks themselves run in parallel.
+
+## Code Review Remediation Checklist
+
+- [x] Honor package-level selections for targeted updaters and clearly mark full-system-only update modes.
+- [x] Respect `--yes` when running `apt-get` and MSYS2 updates.
+- [x] Surface failed update checks instead of reporting the module as up to date.
+- [x] Cancel complete updater process trees and report termination failures.
+- [x] Update Unix Node.js installations managed by the standard `nvm` shell script.
+- [x] Keep module/package selection synchronized and persist an explicitly empty selection.
+- [x] Parse package versions from pacman, DNF/Yum, zypper, snap, and rustup output.
+- [x] Allow elevation for installed elevated modules when the GUI is filtered with `--only`.
 
 ## Implementation Status
 

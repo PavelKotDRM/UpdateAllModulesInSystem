@@ -68,7 +68,7 @@ pub struct GuiApp {
     auto_yes: bool,
     status_line: String,
     started_scan: bool,
-    persisted_selection: BTreeSet<String>,
+    persisted_selection: Option<BTreeSet<String>>,
     persisted_update_selection: BTreeMap<String, BTreeSet<String>>,
     active_tab: GuiTab,
     show_not_found: bool,
