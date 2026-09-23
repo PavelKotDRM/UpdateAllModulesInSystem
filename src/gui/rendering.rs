@@ -54,7 +54,7 @@ impl GuiApp {
                         }
                         *selection_changed = true;
                     }
-                    ui.heading(format!("{} ({:?})", module.name, module.kind));
+                    ui.heading(format!("{} ({})", module.name, module.kind.label()));
                 });
 
                 ui.label(module.status_label());
@@ -62,7 +62,12 @@ impl GuiApp {
                 if let Some(progress) = progress {
                     ui.colored_label(
                         phase_color(progress.phase),
-                        format!("Статус обновления: {}", progress.phase.label()),
+                        crate::tr!(
+                            crate::localization::current_language(),
+                            gui,
+                            status_update_prefix,
+                            status = progress.phase.label()
+                        ),
                     );
                     if let Some(detail) = &progress.detail {
                         let detail = detail
@@ -84,37 +89,44 @@ impl GuiApp {
                         .iter()
                         .filter(|update| update.selected)
                         .count();
-                    ui.small(format!(
-                        "Выбрано приложений: {}/{}",
-                        selected_updates_count,
-                        module.updates.len()
+                    ui.small(crate::tr!(
+                        crate::localization::current_language(),
+                        gui,
+                        selected_packages_count,
+                        selected = selected_updates_count,
+                        total = module.updates.len()
                     ));
 
-                    egui::CollapsingHeader::new(format!("Детали ({})", module.updates.len()))
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            let mut update_selection_changed = false;
-                            for (update, detail_line) in module.updates.iter_mut().zip(detail_lines)
-                            {
-                                ui.horizontal_wrapped(|ui| {
-                                    let response = ui.checkbox(&mut update.selected, "");
-                                    if response.changed() {
-                                        update_selection_changed = true;
-                                    }
-                                    ui.label(detail_line);
-                                });
-                            }
+                    egui::CollapsingHeader::new(crate::tr!(
+                        crate::localization::current_language(),
+                        gui,
+                        update_details,
+                        count = module.updates.len()
+                    ))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let mut update_selection_changed = false;
+                        for (update, detail_line) in module.updates.iter_mut().zip(detail_lines) {
+                            ui.horizontal_wrapped(|ui| {
+                                let response = ui.checkbox(&mut update.selected, "");
+                                if response.changed() {
+                                    update_selection_changed = true;
+                                }
+                                ui.label(detail_line);
+                            });
+                        }
 
-                            if update_selection_changed {
-                                module.selected =
-                                    module.updates.iter().any(|update| update.selected);
-                                *selection_changed = true;
-                            }
-                        });
+                        if update_selection_changed {
+                            module.selected = module.updates.iter().any(|update| update.selected);
+                            *selection_changed = true;
+                        }
+                    });
                 } else if !module.updates.is_empty() {
-                    ui.small(format!(
-                        "Обновление выполняется целиком; найдено пакетов: {}",
-                        module.updates.len()
+                    ui.small(crate::tr!(
+                        crate::localization::current_language(),
+                        gui,
+                        full_system_update_notice,
+                        count = module.updates.len()
                     ));
                 }
             });

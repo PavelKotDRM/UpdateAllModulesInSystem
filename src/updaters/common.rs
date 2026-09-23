@@ -115,9 +115,12 @@ pub(super) fn selected_package_names(
                 .filter(|name| !name.is_empty())
                 .map(str::to_owned)
                 .ok_or_else(|| {
-                    UpdaterError::Message(format!(
-                        "{manager}: некорректное имя выбранного пакета `{}`",
-                        update.name
+                    UpdaterError::Message(crate::tr!(
+                        crate::localization::current_language(),
+                        updater,
+                        invalid_package_name,
+                        manager = manager,
+                        package = update.name
                     ))
                 })
         })

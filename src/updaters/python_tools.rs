@@ -25,8 +25,16 @@ pub(super) fn python_invocation() -> Option<(String, Vec<String>)> {
 }
 
 pub(super) fn run_python_module(args: &[String]) -> Result<CommandOutput, UpdaterError> {
-    let (program, mut prefix) =
-        python_invocation().ok_or_else(|| UpdaterError::Message("python не найден".to_owned()))?;
+    let (program, mut prefix) = python_invocation().ok_or_else(|| {
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                python_missing
+            )
+            .to_owned(),
+        )
+    })?;
     prefix.push("-m".to_owned());
     prefix.push("pip".to_owned());
     prefix.extend(args.iter().cloned());
@@ -37,8 +45,16 @@ pub(super) fn stream_python_module(
     args: &[String],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let (program, mut prefix) =
-        python_invocation().ok_or_else(|| UpdaterError::Message("python не найден".to_owned()))?;
+    let (program, mut prefix) = python_invocation().ok_or_else(|| {
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                python_missing
+            )
+            .to_owned(),
+        )
+    })?;
     prefix.push("-m".to_owned());
     prefix.push("pip".to_owned());
     prefix.extend(args.iter().cloned());
@@ -84,8 +100,11 @@ pub(super) fn apply_pip_updates(
         match parse_pip_updates() {
             Ok(values) => values,
             Err(error) if uv_installed() => {
-                let _ = log_sender.send(format!(
-                    "pip: не удалось получить список через python -m pip ({error}); пробую uv"
+                let _ = log_sender.send(crate::tr!(
+                    crate::localization::current_language(),
+                    updater,
+                    pip_list_failed_fallback,
+                    error = error
                 ));
                 parse_uv_updates()?
             }
@@ -96,7 +115,14 @@ pub(super) fn apply_pip_updates(
     };
 
     if updates.is_empty() {
-        let _ = log_sender.send("pip: обновления не найдены".to_owned());
+        let _ = log_sender.send(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                pip_updates_not_found
+            )
+            .to_owned(),
+        );
         return Ok(());
     }
 
@@ -109,8 +135,11 @@ pub(super) fn apply_pip_updates(
     match stream_python_module(&args, log_sender) {
         Ok(()) => Ok(()),
         Err(error) if uv_installed() => {
-            let _ = log_sender.send(format!(
-                "pip: обновление через python -m pip завершилось ошибкой ({error}); пробую uv"
+            let _ = log_sender.send(crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                pip_update_failed_fallback,
+                error = error
             ));
             // uv pip не понимает флаг pip `--no-input`
             let uv_args: Vec<String> = args
@@ -228,7 +257,14 @@ pub(super) fn apply_uv_updates(
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
     if selected_updates.is_empty() && check_uv_updates()?.is_empty() {
-        let _ = log_sender.send("uv: обновления не найдены".to_owned());
+        let _ = log_sender.send(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                uv_updates_not_found
+            )
+            .to_owned(),
+        );
         return Ok(());
     }
 
@@ -245,7 +281,12 @@ fn current_uv_version() -> Result<String, UpdaterError> {
     let version = output.stdout.trim();
     if version.is_empty() {
         return Err(UpdaterError::Message(
-            "uv: не удалось определить текущую версию".to_owned(),
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                uv_current_version_unknown
+            )
+            .to_owned(),
         ));
     }
 

@@ -85,6 +85,7 @@ pub fn discover_modules_with_progress(
     let scan_jobs = Arc::new(Mutex::new(scan_jobs));
     let (result_tx, result_rx) = mpsc::channel::<(usize, ModuleSnapshot)>();
     let mut handles = Vec::with_capacity(worker_count);
+    let language = crate::localization::current_language();
 
     for _ in 0..worker_count {
         let jobs = Arc::clone(&scan_jobs);
@@ -100,11 +101,13 @@ pub fn discover_modules_with_progress(
                     break;
                 };
 
-                let snapshot = scan_updater(
-                    &*descriptor.updater,
-                    descriptor.kind,
-                    descriptor.requires_elevation,
-                );
+                let snapshot = crate::localization::with_language(language, || {
+                    scan_updater(
+                        &*descriptor.updater,
+                        descriptor.kind,
+                        descriptor.requires_elevation,
+                    )
+                });
                 let _ = result_sender.send((index, snapshot));
             }
         }));

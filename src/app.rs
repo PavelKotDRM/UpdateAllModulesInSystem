@@ -37,12 +37,13 @@ pub enum UpdatePhase {
 impl UpdatePhase {
     /// Возвращает локализованную подпись для CLI и GUI.
     pub fn label(&self) -> &'static str {
+        let language = crate::localization::current_language();
         match self {
-            Self::Queued => "В очереди",
-            Self::Running => "Выполняется",
-            Self::Completed => "Завершен",
-            Self::Failed => "Ошибка",
-            Self::Cancelled => "Отменено",
+            Self::Queued => crate::tr!(language, app, phase_queued),
+            Self::Running => crate::tr!(language, app, phase_running),
+            Self::Completed => crate::tr!(language, app, phase_completed),
+            Self::Failed => crate::tr!(language, app, phase_failed),
+            Self::Cancelled => crate::tr!(language, app, phase_cancelled),
         }
     }
 }
@@ -60,24 +61,30 @@ pub struct ModuleUpdateProgress {
 
 /// Рендерит снимки модулей в UTF-8 таблицу для CLI.
 pub fn render_cli_table(modules: &[ModuleSnapshot]) -> String {
+    let language = crate::localization::current_language();
     let mut table = Table::new();
     table.load_style(UTF8_FULL);
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec!["Инструмент", "Установлен", "Статус", "Обновления"]);
+    table.set_header(vec![
+        crate::tr!(language, app, table_tool),
+        crate::tr!(language, app, table_installed),
+        crate::tr!(language, app, table_status),
+        crate::tr!(language, app, table_updates),
+    ]);
 
     for module in modules {
         table.add_row(vec![
             module.name.clone(),
             if module.installed {
-                "Да".to_owned()
+                crate::tr!(language, app, yes).to_owned()
             } else {
-                "Нет".to_owned()
+                crate::tr!(language, app, no).to_owned()
             },
             module.status_label(),
             if module.updates.is_empty() {
                 "-".to_owned()
             } else if !module.supports_package_selection {
-                format!("Полное обновление ({} пакетов)", module.updates.len())
+                crate::tr!(language, app, full_update, packages = module.updates.len())
             } else {
                 module
                     .updates
@@ -106,7 +113,14 @@ pub fn summarize_elevation_warning(modules: &[ModuleSnapshot]) -> Option<String>
         return None;
     }
 
-    Some("Запуск без прав администратора: системные менеджеры могут быть пропущены или завершиться с ошибкой".to_owned())
+    Some(
+        crate::tr!(
+            crate::localization::current_language(),
+            app,
+            elevation_warning
+        )
+        .to_owned(),
+    )
 }
 
 /// Запускает обновление модулей без явного канала прогресса.
@@ -165,6 +179,7 @@ pub fn run_updates_with_progress_cancellable(
     progress_sender: Option<Sender<ModuleUpdateProgress>>,
     cancellation: UpdateCancellation,
 ) -> Vec<(String, Result<(), UpdaterError>)> {
+    let language = crate::localization::current_language();
     let mut results = Vec::new();
     let mut handlers = registry()
         .into_iter()
@@ -179,20 +194,27 @@ pub fn run_updates_with_progress_cancellable(
         if let Some(reason) = skip_update_reason(module, &selected_updates) {
             let _ = log_sender.send(format_module_log(
                 &module.name,
-                format!("Пропуск: {reason}"),
+                crate::tr!(language, app, skip_prefix, reason = reason),
             ));
             continue;
         }
 
         let Some(updater) = handlers.remove(&module.name) else {
-            let outcome = Err(UpdaterError::Message(format!(
-                "{}: обработчик не найден",
-                module.name
+            let outcome = Err(UpdaterError::Message(crate::tr!(
+                language,
+                app,
+                updater_not_found,
+                module = module.name
             )));
             send_progress(&progress_sender, &module.name, UpdatePhase::Failed);
             let _ = log_sender.send(format_module_log(
                 &module.name,
-                format!("Этап: ошибка: {}", outcome.as_ref().err().unwrap()),
+                crate::tr!(
+                    language,
+                    app,
+                    stage_error,
+                    error = outcome.as_ref().err().unwrap()
+                ),
             ));
             results.push((module.name.clone(), outcome));
             continue;
@@ -221,13 +243,15 @@ pub fn run_updates_with_progress_cancellable(
         let progress_sender = progress_sender.clone();
         let cancellation = cancellation.clone();
         thread::spawn(move || {
-            run_parallel_update_jobs(
-                parallel_jobs,
-                force_yes,
-                log_sender,
-                progress_sender,
-                cancellation,
-            )
+            crate::localization::with_language(language, || {
+                run_parallel_update_jobs(
+                    parallel_jobs,
+                    force_yes,
+                    log_sender,
+                    progress_sender,
+                    cancellation,
+                )
+            })
         })
     });
 
@@ -236,25 +260,27 @@ pub fn run_updates_with_progress_cancellable(
     let serial_cancellation = cancellation.clone();
     let serial_handle = (!serial_jobs.is_empty()).then(|| {
         thread::spawn(move || {
-            let mut completed = Vec::new();
-            let mut jobs = serial_jobs.into_iter();
-            while let Some(job) = jobs.next() {
-                if serial_cancellation.is_cancelled() {
-                    cancel_queued_job(job, &serial_sender, &serial_progress_sender);
-                    for queued_job in jobs {
-                        cancel_queued_job(queued_job, &serial_sender, &serial_progress_sender);
+            crate::localization::with_language(language, || {
+                let mut completed = Vec::new();
+                let mut jobs = serial_jobs.into_iter();
+                while let Some(job) = jobs.next() {
+                    if serial_cancellation.is_cancelled() {
+                        cancel_queued_job(job, &serial_sender, &serial_progress_sender);
+                        for queued_job in jobs {
+                            cancel_queued_job(queued_job, &serial_sender, &serial_progress_sender);
+                        }
+                        break;
                     }
-                    break;
+                    completed.push(run_update_job(
+                        job,
+                        force_yes,
+                        &serial_sender,
+                        serial_progress_sender.clone(),
+                        &serial_cancellation,
+                    ));
                 }
-                completed.push(run_update_job(
-                    job,
-                    force_yes,
-                    &serial_sender,
-                    serial_progress_sender.clone(),
-                    &serial_cancellation,
-                ));
-            }
-            completed
+                completed
+            })
         })
     });
 
@@ -319,7 +345,10 @@ fn run_update_job(
     } = job;
 
     send_progress(&progress_sender, &module_name, UpdatePhase::Running);
-    let _ = log_sender.send(format_module_log(&module_name, "Этап: запуск обновления"));
+    let _ = log_sender.send(format_module_log(
+        &module_name,
+        crate::tr!(crate::localization::current_language(), app, stage_start),
+    ));
 
     let (module_log_tx, module_log_rx) = mpsc::channel::<String>();
     let forward_sender = log_sender.clone();
@@ -350,12 +379,26 @@ fn run_update_job(
 
     if cancellation.is_cancelled() {
         send_progress(&progress_sender, &module_name, UpdatePhase::Cancelled);
-        let _ = log_sender.send(format_module_log(&module_name, "Этап: отменено"));
+        let _ = log_sender.send(format_module_log(
+            &module_name,
+            crate::tr!(
+                crate::localization::current_language(),
+                app,
+                stage_cancelled
+            ),
+        ));
     } else {
         match &outcome {
             Ok(()) => {
                 send_progress(&progress_sender, &module_name, UpdatePhase::Completed);
-                let _ = log_sender.send(format_module_log(&module_name, "Этап: завершено"));
+                let _ = log_sender.send(format_module_log(
+                    &module_name,
+                    crate::tr!(
+                        crate::localization::current_language(),
+                        app,
+                        stage_completed
+                    ),
+                ));
             }
             Err(error) => {
                 send_progress_with_detail(
@@ -366,7 +409,12 @@ fn run_update_job(
                 );
                 let _ = log_sender.send(format_module_log(
                     &module_name,
-                    format!("Этап: ошибка: {error}"),
+                    crate::tr!(
+                        crate::localization::current_language(),
+                        app,
+                        stage_error,
+                        error = error
+                    ),
                 ));
             }
         }
@@ -400,9 +448,11 @@ fn verify_selected_updates_applied(
         return Ok(());
     }
 
-    Err(UpdaterError::Message(format!(
-        "обновление не подтверждено повторной проверкой; всё ещё доступны: {}",
-        remaining_names.join(", ")
+    Err(UpdaterError::Message(crate::tr!(
+        crate::localization::current_language(),
+        app,
+        update_not_verified,
+        updates = remaining_names.join(", ")
     )))
 }
 
@@ -425,6 +475,7 @@ fn run_parallel_update_jobs(
     let jobs = Arc::new(Mutex::new(jobs));
     let (result_tx, result_rx) = mpsc::channel();
     let mut handles = Vec::with_capacity(worker_count);
+    let language = crate::localization::current_language();
 
     for _ in 0..worker_count {
         let jobs = Arc::clone(&jobs);
@@ -433,35 +484,37 @@ fn run_parallel_update_jobs(
         let worker_progress_sender = progress_sender.clone();
         let worker_cancellation = cancellation.clone();
         handles.push(thread::spawn(move || {
-            loop {
-                let next_job = {
-                    let mut jobs = jobs.lock().expect("update jobs mutex poisoned");
-                    if worker_cancellation.is_cancelled() {
-                        for queued_job in jobs.drain(..) {
-                            cancel_queued_job(
-                                queued_job,
-                                &worker_log_sender,
-                                &worker_progress_sender,
-                            );
+            crate::localization::with_language(language, || {
+                loop {
+                    let next_job = {
+                        let mut jobs = jobs.lock().expect("update jobs mutex poisoned");
+                        if worker_cancellation.is_cancelled() {
+                            for queued_job in jobs.drain(..) {
+                                cancel_queued_job(
+                                    queued_job,
+                                    &worker_log_sender,
+                                    &worker_progress_sender,
+                                );
+                            }
+                            return;
                         }
-                        return;
-                    }
-                    jobs.pop()
-                };
+                        jobs.pop()
+                    };
 
-                let Some(job) = next_job else {
-                    break;
-                };
+                    let Some(job) = next_job else {
+                        break;
+                    };
 
-                let result = run_update_job(
-                    job,
-                    force_yes,
-                    &worker_log_sender,
-                    worker_progress_sender.clone(),
-                    &worker_cancellation,
-                );
-                let _ = result_sender.send(result);
-            }
+                    let result = run_update_job(
+                        job,
+                        force_yes,
+                        &worker_log_sender,
+                        worker_progress_sender.clone(),
+                        &worker_cancellation,
+                    );
+                    let _ = result_sender.send(result);
+                }
+            })
         }));
     }
     drop(result_tx);
@@ -482,7 +535,11 @@ fn cancel_queued_job(
     send_progress(progress_sender, &job.module_name, UpdatePhase::Cancelled);
     let _ = log_sender.send(format_module_log(
         &job.module_name,
-        "Этап: отменено до запуска",
+        crate::tr!(
+            crate::localization::current_language(),
+            app,
+            stage_cancelled_before_start
+        ),
     ));
 }
 
@@ -531,20 +588,21 @@ fn skip_update_reason(
     module: &ModuleSnapshot,
     selected_updates: &[crate::model::PackageUpdate],
 ) -> Option<&'static str> {
+    let language = crate::localization::current_language();
     if !module.selected {
-        return Some("модуль не выбран");
+        return Some(crate::tr!(language, app, skip_not_selected));
     }
 
     if !module.installed {
-        return Some("инструмент не установлен");
+        return Some(crate::tr!(language, app, skip_not_installed));
     }
 
     if !module.status.has_updates() {
-        return Some("обновления не требуются");
+        return Some(crate::tr!(language, app, skip_no_updates));
     }
 
     if !module.updates.is_empty() && selected_updates.is_empty() {
-        return Some("все обновления внутри модуля сняты");
+        return Some(crate::tr!(language, app, skip_all_unselected));
     }
 
     None
@@ -727,19 +785,21 @@ mod tests {
         let logs: Vec<String> = rx.iter().collect();
         assert!(
             logs.iter()
-                .any(|line| line.contains("[m1]") && line.contains("модуль не выбран"))
+                .any(|line| line.contains("[m1]") && line.contains("module not selected"))
         );
         assert!(
             logs.iter()
-                .any(|line| line.contains("[m2]") && line.contains("инструмент не установлен"))
+                .any(|line| line.contains("[m2]") && line.contains("tool is not installed"))
         );
         assert!(
             logs.iter()
-                .any(|line| line.contains("[m3]") && line.contains("обновления не требуются"))
+                .any(|line| line.contains("[m3]") && line.contains("no updates required"))
         );
-        assert!(logs.iter().any(
-            |line| line.contains("[missing-updater]") && line.contains("обработчик не найден")
-        ));
+        assert!(
+            logs.iter().any(
+                |line| line.contains("[missing-updater]") && line.contains("updater not found")
+            )
+        );
     }
 
     #[test]
@@ -779,6 +839,42 @@ mod tests {
     }
 
     #[test]
+    fn parallel_update_workers_use_the_selected_language() {
+        let updater: Box<dyn Updater> = Box::new(FakeUpdater {
+            name: "fake",
+            installed: true,
+            updates: Vec::new(),
+            fail_message: Some("boom".to_owned()),
+        });
+        let job = UpdateJob {
+            index: 0,
+            module_name: "fake".to_owned(),
+            updater,
+            selected_updates: vec![PackageUpdate::new("pkg", "1.0", "1.1")],
+        };
+        let (log_tx, log_rx) = std::sync::mpsc::channel::<String>();
+
+        let results =
+            crate::localization::with_language(crate::localization::Language::Russian, || {
+                run_parallel_update_jobs(
+                    vec![job],
+                    true,
+                    log_tx,
+                    None,
+                    UpdateCancellation::default(),
+                )
+            });
+        let logs = log_rx.into_iter().collect::<Vec<_>>();
+
+        assert!(results[0].2.is_err());
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("Этап: запуск обновления"))
+        );
+        assert!(logs.iter().any(|line| line.contains("Этап: ошибка: boom")));
+    }
+
+    #[test]
     fn run_update_job_fails_when_selected_update_remains_available() {
         let updater: Box<dyn Updater> = Box::new(FakeUpdater {
             name: "fake",
@@ -804,7 +900,12 @@ mod tests {
             &UpdateCancellation::default(),
         );
 
-        assert!(result.unwrap_err().to_string().contains("не подтверждено"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not confirmed by a follow-up check")
+        );
         let phases = progress_rx
             .iter()
             .map(|progress| progress.phase)
@@ -875,7 +976,7 @@ mod tests {
         drop(log_tx);
 
         assert_eq!(progress_rx.recv().unwrap().phase, UpdatePhase::Cancelled);
-        assert!(log_rx.recv().unwrap().contains("отменено до запуска"));
+        assert!(log_rx.recv().unwrap().contains("cancelled before start"));
     }
 
     #[test]

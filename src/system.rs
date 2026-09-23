@@ -73,42 +73,91 @@ fn validate_elevation_file(
     suffix: &str,
     must_be_empty: bool,
 ) -> Result<()> {
-    let parent = path
-        .parent()
-        .context("служебный файл не имеет родительского каталога")?;
-    let expected_parent = fs::canonicalize(std::env::temp_dir())
-        .context("не удалось определить системный временный каталог")?;
-    let actual_parent =
-        fs::canonicalize(parent).context("не удалось проверить каталог служебного файла")?;
+    let parent = path.parent().context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        temp_file_missing_parent
+    ))?;
+    let expected_parent = fs::canonicalize(std::env::temp_dir()).context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        temp_directory_unknown
+    ))?;
+    let actual_parent = fs::canonicalize(parent).context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        temp_directory_check_failed
+    ))?;
     if actual_parent != expected_parent {
-        bail!("служебный файл находится вне системного временного каталога");
+        bail!(
+            "{}",
+            crate::tr!(
+                crate::localization::current_language(),
+                system,
+                temp_file_outside_directory
+            )
+        );
     }
 
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .context("некорректное имя служебного файла")?;
+        .context(crate::tr!(
+            crate::localization::current_language(),
+            system,
+            temp_file_name_invalid
+        ))?;
     let identity = name
         .strip_prefix(prefix)
         .and_then(|name| name.strip_suffix(suffix))
-        .context("неожиданное имя служебного файла")?;
+        .context(crate::tr!(
+            crate::localization::current_language(),
+            system,
+            temp_file_name_unexpected
+        ))?;
     let (process_id, nonce) = identity
         .split_once('_')
         .filter(|(_, nonce)| !nonce.contains('_'))
-        .context("некорректный идентификатор служебного файла")?;
-    process_id
-        .parse::<u32>()
-        .context("некорректный PID в имени служебного файла")?;
-    nonce
-        .parse::<u128>()
-        .context("некорректный nonce в имени служебного файла")?;
+        .context(crate::tr!(
+            crate::localization::current_language(),
+            system,
+            temp_file_identity_invalid
+        ))?;
+    process_id.parse::<u32>().context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        temp_file_pid_invalid
+    ))?;
+    nonce.parse::<u128>().context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        temp_file_nonce_invalid
+    ))?;
 
-    let metadata = fs::symlink_metadata(path).context("служебный файл не существует")?;
+    let metadata = fs::symlink_metadata(path).context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        temp_file_missing
+    ))?;
     if !metadata.file_type().is_file() {
-        bail!("служебный путь не является обычным файлом");
+        bail!(
+            "{}",
+            crate::tr!(
+                crate::localization::current_language(),
+                system,
+                temp_file_not_regular
+            )
+        );
     }
     if must_be_empty && metadata.len() != 0 {
-        bail!("служебный маркер уже был использован");
+        bail!(
+            "{}",
+            crate::tr!(
+                crate::localization::current_language(),
+                system,
+                temp_file_already_used
+            )
+        );
     }
     Ok(())
 }
@@ -121,11 +170,25 @@ fn validate_elevation_file(
 /// недоступно или новый процесс не удалось запустить.
 pub fn restart_elevated(module_names: &[String], elevation_state_file: &Path) -> Result<()> {
     if is_admin() {
-        bail!("приложение уже запущено с повышенными правами");
+        bail!(
+            "{}",
+            crate::tr!(
+                crate::localization::current_language(),
+                system,
+                already_elevated
+            )
+        );
     }
 
     if module_names.is_empty() {
-        bail!("не указаны модули для повторного сканирования");
+        bail!(
+            "{}",
+            crate::tr!(
+                crate::localization::current_language(),
+                system,
+                no_modules_to_rescan
+            )
+        );
     }
 
     validate_elevation_state_file(elevation_state_file)?;
@@ -140,8 +203,11 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    let executable =
-        std::env::current_exe().context("не удалось определить путь к исполняемому файлу")?;
+    let executable = std::env::current_exe().context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        executable_path_unknown
+    ))?;
     let executable = executable
         .as_os_str()
         .encode_wide()
@@ -166,8 +232,13 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
 
     if result as isize <= 32 {
         bail!(
-            "Windows отклонила запуск с правами администратора (код {})",
-            result as isize
+            "{}",
+            crate::tr!(
+                crate::localization::current_language(),
+                system,
+                windows_elevation_denied,
+                code = result as isize
+            )
         );
     }
 
@@ -221,14 +292,28 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     if !command_available("pkexec") {
-        bail!("не найден pkexec; установите PolicyKit для запуска GUI с правами root");
+        bail!(
+            "{}",
+            crate::tr!(
+                crate::localization::current_language(),
+                system,
+                pkexec_missing
+            )
+        );
     }
 
-    let executable =
-        std::env::current_exe().context("не удалось определить путь к исполняемому файлу")?;
+    let executable = std::env::current_exe().context(crate::tr!(
+        crate::localization::current_language(),
+        system,
+        executable_path_unknown
+    ))?;
     let marker_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .context("не удалось определить системное время")?
+        .context(crate::tr!(
+            crate::localization::current_language(),
+            system,
+            system_time_unknown
+        ))?
         .as_nanos();
     let ready_file = std::env::temp_dir().join(format!(
         "update_all_modules_elevated_{}_{}",
@@ -239,7 +324,11 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
         .write(true)
         .create_new(true)
         .open(&ready_file)
-        .context("не удалось создать маркер запуска GUI")?;
+        .context(crate::tr!(
+            crate::localization::current_language(),
+            system,
+            ready_marker_create_failed
+        ))?;
 
     let mut command = Command::new("pkexec");
     command.arg("env");
@@ -276,7 +365,11 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
         Ok(child) => child,
         Err(error) => {
             let _ = fs::remove_file(&ready_file);
-            return Err(error).context("не удалось запустить pkexec");
+            return Err(error).context(crate::tr!(
+                crate::localization::current_language(),
+                system,
+                pkexec_start_failed
+            ));
         }
     };
 
@@ -286,12 +379,21 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
             return Ok(());
         }
 
-        if let Some(status) = child
-            .try_wait()
-            .context("не удалось проверить запуск приложения с правами root")?
-        {
+        if let Some(status) = child.try_wait().context(crate::tr!(
+            crate::localization::current_language(),
+            system,
+            elevated_launch_check_failed
+        ))? {
             let _ = fs::remove_file(&ready_file);
-            bail!("новое окно с правами root не запустилось (код {status})");
+            bail!(
+                "{}",
+                crate::tr!(
+                    crate::localization::current_language(),
+                    system,
+                    elevated_window_failed,
+                    code = status
+                )
+            );
         }
 
         thread::sleep(Duration::from_millis(100));
@@ -300,7 +402,14 @@ fn restart_elevated_impl(_module_names: &[String], elevation_state_file: &Path) 
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn restart_elevated_impl(_module_names: &[String], _elevation_state_file: &Path) -> Result<()> {
-    bail!("перезапуск с повышенными правами поддерживается только в Windows и Linux")
+    bail!(
+        "{}",
+        crate::tr!(
+            crate::localization::current_language(),
+            system,
+            elevation_unsupported
+        )
+    )
 }
 
 /// Проверяет наличие исполняемой команды в `PATH`.

@@ -24,6 +24,7 @@ mod app;
 mod build_info;
 mod cli;
 mod gui;
+mod localization;
 mod model;
 mod repaint;
 mod system;
@@ -43,6 +44,11 @@ use std::process::ExitCode;
 /// потока обновлений в CLI.
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
+    let language = cli.language.unwrap_or_default();
+    localization::with_language(language, || run_application(cli))
+}
+
+fn run_application(cli: Cli) -> Result<ExitCode> {
     validate_only_modules(&cli.only)?;
     let raw_args: Vec<String> = std::env::args().collect();
     let gui_mode = cli.gui || raw_args.len() == 1;
@@ -55,6 +61,7 @@ fn main() -> Result<ExitCode> {
         gui::launch_gui(
             filter,
             cli.yes,
+            cli.language,
             cli.elevation_ready_file,
             cli.elevation_state_file,
         )?;
@@ -75,11 +82,13 @@ fn validate_only_modules(only: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!(
-        "неизвестные имена модулей: {}. Доступные имена: {}",
-        unknown.into_iter().collect::<Vec<_>>().join(", "),
-        available.into_iter().collect::<Vec<_>>().join(", ")
-    )
+    anyhow::bail!(crate::tr!(
+        localization::current_language(),
+        cli,
+        unknown_modules,
+        unknown = unknown.into_iter().collect::<Vec<_>>().join(", "),
+        available = available.into_iter().collect::<Vec<_>>().join(", ")
+    ))
 }
 
 /// Преобразует параметры CLI в фильтр реестра обновляторов.
@@ -120,9 +129,13 @@ fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<ExitCode> {
         .collect();
     let force_yes = cli.yes;
     let verbose = cli.verbose;
+    let language = localization::current_language();
 
-    let update_handle =
-        std::thread::spawn(move || app::run_updates(&update_modules, force_yes, &log_tx));
+    let update_handle = std::thread::spawn(move || {
+        localization::with_language(language, || {
+            app::run_updates(&update_modules, force_yes, &log_tx)
+        })
+    });
 
     while let Ok(message) = log_rx.recv() {
         if verbose {
@@ -130,9 +143,13 @@ fn run_cli(cli: Cli, filter: app::SelectionFilter) -> Result<ExitCode> {
         }
     }
 
-    let results = update_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("поток обновления завершился аварийно"))?;
+    let results = update_handle.join().map_err(|_| {
+        anyhow::anyhow!(crate::tr!(
+            localization::current_language(),
+            cli,
+            update_worker_panicked
+        ))
+    })?;
 
     for (name, result) in &results {
         match result {
@@ -183,7 +200,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("missing-a, missing-z"));
-        assert!(error.contains("Доступные имена:"));
+        assert!(error.contains("Available names:"));
         assert!(error.contains("vscode-extensions"));
     }
 }

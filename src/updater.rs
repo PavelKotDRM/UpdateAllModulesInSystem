@@ -7,6 +7,7 @@ pub use parsing::heuristic_parse_updates;
 use crate::model::PackageUpdate;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::error::Error as StdError;
 use std::fmt::{Display, Formatter};
 use std::io::{self, Read};
 use std::process::{Command, Stdio};
@@ -16,7 +17,6 @@ use std::sync::{
     mpsc::Sender,
 };
 use std::thread;
-use thiserror::Error;
 
 #[cfg(target_os = "windows")]
 use encoding_rs::{IBM866, WINDOWS_1251};
@@ -56,8 +56,12 @@ impl UpdateCancellation {
         let mut errors = Vec::new();
         for process_id in process_ids {
             if let Err(error) = terminate_process_tree(process_id) {
-                errors.push(format!(
-                    "не удалось завершить дерево процесса {process_id}: {error}"
+                errors.push(crate::tr!(
+                    crate::localization::current_language(),
+                    updater,
+                    process_tree_termination_failed,
+                    process_id = process_id,
+                    error = error
                 ));
             }
         }
@@ -88,8 +92,12 @@ impl UpdateCancellation {
                 .termination_errors
                 .lock()
                 .expect("termination errors mutex poisoned")
-                .push(format!(
-                    "не удалось завершить дерево процесса {process_id}: {error}"
+                .push(crate::tr!(
+                    crate::localization::current_language(),
+                    updater,
+                    process_tree_termination_failed,
+                    process_id = process_id,
+                    error = error
                 ));
         }
         ProcessRegistration {
@@ -162,10 +170,15 @@ fn terminate_process_tree(process_id: u32) -> io::Result<()> {
         decode_bytes(&output.stdout),
         decode_bytes(&output.stderr)
     );
-    Err(io::Error::other(format!(
-        "taskkill завершился с кодом {:?}: {}",
-        output.status.code(),
-        details.trim()
+    Err(io::Error::other(crate::tr!(
+        crate::localization::current_language(),
+        updater,
+        taskkill_failed,
+        code = output
+            .status
+            .code()
+            .map_or_else(|| "None".to_owned(), |code| code.to_string()),
+        details = details.trim()
     )))
 }
 
@@ -194,7 +207,11 @@ fn terminate_process_tree(process_id: u32) -> io::Result<()> {
 fn terminate_process_tree(_process_id: u32) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "остановка дерева процессов не поддерживается на этой платформе",
+        crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            process_termination_unsupported
+        ),
     ))
 }
 
@@ -240,38 +257,89 @@ pub trait Updater: Send + Sync {
 }
 
 /// Типизированные ошибки взаимодействия с внешними менеджерами пакетов.
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum UpdaterError {
     /// Процесс не удалось создать.
-    #[error("ошибка запуска команды `{program}`: {source}")]
-    SpawnError {
-        program: String,
-        #[source]
-        source: io::Error,
-    },
+    SpawnError { program: String, source: io::Error },
     /// Не удалось прочитать вывод или дождаться завершения процесса.
-    #[error("ошибка чтения вывода команды `{program}`: {source}")]
-    StreamError {
-        program: String,
-        #[source]
-        source: io::Error,
-    },
+    StreamError { program: String, source: io::Error },
     /// Команда завершилась ненулевым кодом там, где требуется успех.
-    #[error("команда `{program}` завершилась с кодом {code:?}: {stderr}")]
     CommandFailed {
         program: String,
         code: Option<i32>,
         stderr: String,
     },
     /// Менеджер вернул некорректный JSON.
-    #[error("json error: {0}")]
-    JsonError(#[from] serde_json::Error),
+    JsonError(serde_json::Error),
     /// HTTP-запрос завершился ошибкой.
-    #[error("http error: {0}")]
-    HttpError(#[from] reqwest::Error),
+    HttpError(reqwest::Error),
     /// Ошибка, не имеющая более специализированного варианта.
-    #[error("{0}")]
     Message(String),
+}
+
+impl Display for UpdaterError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        let language = crate::localization::current_language();
+        let message = match self {
+            Self::SpawnError { program, source } => crate::tr!(
+                language,
+                updater,
+                command_spawn_error,
+                program = program,
+                error = source
+            ),
+            Self::StreamError { program, source } => crate::tr!(
+                language,
+                updater,
+                command_stream_error,
+                program = program,
+                error = source
+            ),
+            Self::CommandFailed {
+                program,
+                code,
+                stderr,
+            } => crate::tr!(
+                language,
+                updater,
+                command_failed,
+                program = program,
+                code = code.map_or_else(|| "None".to_owned(), |code| code.to_string()),
+                stderr = stderr
+            ),
+            Self::JsonError(error) => {
+                crate::tr!(language, updater, json_error, error = error)
+            }
+            Self::HttpError(error) => {
+                crate::tr!(language, updater, http_error, error = error)
+            }
+            Self::Message(message) => message.clone(),
+        };
+        formatter.write_str(&message)
+    }
+}
+
+impl StdError for UpdaterError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::SpawnError { source, .. } | Self::StreamError { source, .. } => Some(source),
+            Self::JsonError(error) => Some(error),
+            Self::HttpError(error) => Some(error),
+            Self::CommandFailed { .. } | Self::Message(_) => None,
+        }
+    }
+}
+
+impl From<serde_json::Error> for UpdaterError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::JsonError(error)
+    }
+}
+
+impl From<reqwest::Error> for UpdaterError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::HttpError(error)
+    }
 }
 
 /// Результат выполнения внешней команды.
@@ -467,14 +535,22 @@ fn stream_system_command(
     })?;
     let _registration = register_active_process(child.id());
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| UpdaterError::Message(format!("{}: не удалось получить stdout", program)))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| UpdaterError::Message(format!("{}: не удалось получить stderr", program)))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            command_stdout_unavailable,
+            program = program
+        ))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            command_stderr_unavailable,
+            program = program
+        ))
+    })?;
 
     let stdout_sender = log_sender.clone();
     let stderr_sender = log_sender.clone();
@@ -486,12 +562,22 @@ fn stream_system_command(
         source,
     })?;
 
-    let stdout_text = stdout_handle
-        .join()
-        .map_err(|_| UpdaterError::Message(format!("{}: stdout thread panicked", program)))??;
-    let stderr_text = stderr_handle
-        .join()
-        .map_err(|_| UpdaterError::Message(format!("{}: stderr thread panicked", program)))??;
+    let stdout_text = stdout_handle.join().map_err(|_| {
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            command_stdout_thread_failed,
+            program = program
+        ))
+    })??;
+    let stderr_text = stderr_handle.join().map_err(|_| {
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            command_stderr_thread_failed,
+            program = program
+        ))
+    })??;
 
     Ok(CommandOutput {
         stdout: stdout_text,

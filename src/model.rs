@@ -50,9 +50,17 @@ impl PackageUpdate {
 
     /// Возвращает имя обновления с областью установки для интерфейса.
     pub fn display_name(&self) -> String {
+        let language = crate::localization::current_language();
         self.scope
             .as_ref()
-            .map(|scope| format!("[{scope}] {}", self.name))
+            .map(|scope| {
+                let scope = if scope == "самообновление" {
+                    crate::tr!(language, model, scope_node_self_update)
+                } else {
+                    scope
+                };
+                format!("[{scope}] {}", self.name)
+            })
             .unwrap_or_else(|| self.name.clone())
     }
 
@@ -62,6 +70,18 @@ impl PackageUpdate {
             .as_ref()
             .map(|scope| format!("scope::{scope}::{}", self.name))
             .unwrap_or_else(|| self.name.clone())
+    }
+}
+
+impl ModuleKind {
+    /// Returns the translated user-facing label for this module category.
+    pub fn label(self) -> &'static str {
+        let language = crate::localization::current_language();
+        match self {
+            Self::System => crate::tr!(language, model, kind_system),
+            Self::Tool => crate::tr!(language, model, kind_tool),
+            Self::Python => crate::tr!(language, model, kind_python),
+        }
     }
 }
 
@@ -81,11 +101,14 @@ pub enum ModuleStatus {
 impl ModuleStatus {
     /// Возвращает локализованную метку для CLI и GUI.
     pub fn label(&self) -> String {
+        let language = crate::localization::current_language();
         match self {
-            Self::NotFound => "Не найден в системе".to_owned(),
-            Self::UpToDate => "Актуален".to_owned(),
-            Self::UpdatesAvailable(count) => format!("Доступны обновления ({count} пакетов)"),
-            Self::Error(message) => format!("Ошибка: {message}"),
+            Self::NotFound => crate::tr!(language, model, status_not_found).to_owned(),
+            Self::UpToDate => crate::tr!(language, model, status_up_to_date).to_owned(),
+            Self::UpdatesAvailable(count) => {
+                crate::tr!(language, model, status_updates_available, count = count)
+            }
+            Self::Error(message) => crate::tr!(language, model, status_error, message = message),
         }
     }
 
@@ -135,12 +158,11 @@ impl ModuleSnapshot {
     /// Возвращает пользовательскую метку статуса с особыми инструкциями для
     /// Центра обновления Windows.
     pub fn status_label(&self) -> String {
+        let language = crate::localization::current_language();
         if self.name == "windows-update"
             && let ModuleStatus::UpdatesAvailable(count) = self.status
         {
-            return format!(
-                "Доступны обновления ({count}). Установите их через Центр обновления Windows"
-            );
+            return crate::tr!(language, model, status_windows_updates, count = count);
         }
 
         self.status.label()
@@ -149,7 +171,14 @@ impl ModuleSnapshot {
     /// Формирует строки `name: current -> available` либо одну строку-заглушку.
     pub fn detail_lines(&self) -> Vec<String> {
         if self.updates.is_empty() {
-            return vec!["Список конкретных обновлений пуст".to_owned()];
+            return vec![
+                crate::tr!(
+                    crate::localization::current_language(),
+                    model,
+                    status_empty_updates
+                )
+                .to_owned(),
+            ];
         }
 
         self.updates
@@ -173,14 +202,15 @@ fn package_selection_supported_by_default() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::localization::{Language, with_language};
 
     #[test]
     fn status_labels_and_has_updates_are_consistent() {
-        assert_eq!(ModuleStatus::NotFound.label(), "Не найден в системе");
-        assert_eq!(ModuleStatus::UpToDate.label(), "Актуален");
+        assert_eq!(ModuleStatus::NotFound.label(), "Not installed");
+        assert_eq!(ModuleStatus::UpToDate.label(), "Up to date");
         assert_eq!(
             ModuleStatus::UpdatesAvailable(3).label(),
-            "Доступны обновления (3 пакетов)"
+            "Updates available: 3"
         );
         assert!(ModuleStatus::UpdatesAvailable(1).has_updates());
         assert!(!ModuleStatus::UpToDate.has_updates());
@@ -190,10 +220,7 @@ mod tests {
     fn detail_lines_returns_placeholder_when_no_updates() {
         let module = ModuleSnapshot::new("pip", ModuleKind::Python, false);
         let details = module.detail_lines();
-        assert_eq!(
-            details,
-            vec!["Список конкретных обновлений пуст".to_owned()]
-        );
+        assert_eq!(details, vec!["No individual updates to display".to_owned()]);
     }
 
     #[test]
@@ -227,13 +254,42 @@ mod tests {
     }
 
     #[test]
+    fn node_self_update_scope_is_displayed_in_the_selected_language() {
+        let update = PackageUpdate::new("npm", "1.0", "2.0").with_scope("самообновление");
+
+        assert_eq!(update.display_name(), "[self-update] npm");
+        with_language(Language::Russian, || {
+            assert_eq!(update.display_name(), "[самообновление] npm");
+        });
+    }
+
+    #[test]
+    fn status_labels_follow_the_selected_language() {
+        with_language(Language::Russian, || {
+            assert_eq!(ModuleStatus::NotFound.label(), "Не установлен");
+            assert_eq!(ModuleStatus::UpToDate.label(), "Актуален");
+            assert_eq!(
+                ModuleStatus::UpdatesAvailable(3).label(),
+                "Доступно обновлений: 3"
+            );
+
+            let mut module = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
+            module.status = ModuleStatus::UpdatesAvailable(2);
+            assert_eq!(
+                module.status_label(),
+                "Доступно обновлений: 2. Установите их через Центр обновления Windows"
+            );
+        });
+    }
+
+    #[test]
     fn windows_update_status_recommends_update_center() {
         let mut module = ModuleSnapshot::new("windows-update", ModuleKind::System, true);
         module.status = ModuleStatus::UpdatesAvailable(2);
 
         assert_eq!(
             module.status_label(),
-            "Доступны обновления (2). Установите их через Центр обновления Windows"
+            "Available updates: 2. Install them through Windows Update"
         );
     }
 }

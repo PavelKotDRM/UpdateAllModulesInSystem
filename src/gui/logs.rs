@@ -20,14 +20,19 @@ impl GuiApp {
         match serde_json::to_string_pretty(&self.logs) {
             Ok(logs_json) => {
                 ctx.copy_text(logs_json);
-                let message = "Логи скопированы в буфер обмена в формате JSON".to_owned();
+                let message = crate::tr!(self.language, gui, logs_copied).to_owned();
                 self.status_line = message.clone();
                 self.append_log(format!("[system] {message}"));
             }
             Err(error) => {
-                let message = format!("Не удалось подготовить логи к экспорту: {error}");
+                let message = crate::tr!(self.language, gui, error_export_logs, error = error);
                 self.status_line = message.clone();
-                self.append_log(format!("[system] Ошибка: {message}"));
+                self.append_log(crate::tr!(
+                    self.language,
+                    gui,
+                    error_prefix,
+                    error = message
+                ));
             }
         }
     }

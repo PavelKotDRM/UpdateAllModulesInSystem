@@ -56,7 +56,14 @@ pub(super) fn npm_apply_updates(
 ) -> Result<(), UpdaterError> {
     let updates = selected_or_detected(selected_updates, npm_check_updates)?;
     if updates.is_empty() {
-        let _ = log_sender.send("npm: обновления не найдены".to_owned());
+        let _ = log_sender.send(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                npm_updates_not_found
+            )
+            .to_owned(),
+        );
         return Ok(());
     }
 
@@ -106,7 +113,14 @@ pub(super) fn pnpm_apply_updates(
 ) -> Result<(), UpdaterError> {
     let updates = selected_or_detected(selected_updates, pnpm_check_updates)?;
     if updates.is_empty() {
-        let _ = log_sender.send("pnpm: обновления не найдены".to_owned());
+        let _ = log_sender.send(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                pnpm_updates_not_found
+            )
+            .to_owned(),
+        );
         return Ok(());
     }
 
@@ -141,13 +155,27 @@ pub(super) fn node_installed() -> bool {
 pub(super) fn node_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     let current = current_node_version()?;
 
-    let releases: Value = http_client()?
+    let response = http_client()?
         .get(NODE_RELEASE_INDEX_URL)
         .send()?
-        .error_for_status()?
-        .json()?;
+        .error_for_status()?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
+        .to_owned();
+    let body = response.bytes()?;
+    let releases = parse_node_release_index(&body, &content_type)?;
     let latest = latest_node_version(&releases).ok_or_else(|| {
-        UpdaterError::Message("node: официальный сайт не вернул последнюю версию".to_owned())
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_official_version_missing
+            )
+            .to_owned(),
+        )
     })?;
 
     if current == latest {
@@ -155,6 +183,19 @@ pub(super) fn node_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
     } else {
         Ok(vec![PackageUpdate::new("node", current, latest)])
     }
+}
+
+fn parse_node_release_index(body: &[u8], content_type: &str) -> Result<Value, UpdaterError> {
+    serde_json::from_slice(body).map_err(|error| {
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            node_release_index_invalid_json,
+            url = NODE_RELEASE_INDEX_URL,
+            content_type = content_type,
+            error = error
+        ))
+    })
 }
 
 fn current_node_version() -> Result<String, UpdaterError> {
@@ -176,7 +217,14 @@ fn current_node_version() -> Result<String, UpdaterError> {
                 let version = version_from_output(&output.stdout)
                     .filter(|version| Version::parse(version).is_ok());
                 return version.ok_or_else(|| {
-                    UpdaterError::Message("node: nvm вернул некорректную версию default".to_owned())
+                    UpdaterError::Message(
+                        crate::tr!(
+                            crate::localization::current_language(),
+                            updater,
+                            node_nvm_version_invalid
+                        )
+                        .to_owned(),
+                    )
                 });
             }
         }
@@ -185,7 +233,14 @@ fn current_node_version() -> Result<String, UpdaterError> {
     let current_output = capture_command("node", &["--version".to_owned()])?;
     ensure_success("node", &current_output)?;
     version_from_output(&current_output.stdout).ok_or_else(|| {
-        UpdaterError::Message("node: не удалось определить текущую версию".to_owned())
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_current_version_unknown
+            )
+            .to_owned(),
+        )
     })
 }
 
@@ -205,14 +260,23 @@ pub(super) fn node_apply_updates(
 ) -> Result<(), UpdaterError> {
     let updates = selected_or_detected(selected_updates, node_check_updates)?;
     let Some(update) = updates.first() else {
-        let _ = log_sender.send("node: обновления не найдены".to_owned());
+        let _ = log_sender.send(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_updates_not_found
+            )
+            .to_owned(),
+        );
         return Ok(());
     };
 
     let method = detect_node_install_method();
-    let _ = log_sender.send(format!(
-        "node: определен способ установки: {}",
-        node_install_method_label(method)
+    let _ = log_sender.send(crate::tr!(
+        crate::localization::current_language(),
+        updater,
+        node_install_method,
+        method = node_install_method_label(method)
     ));
     match method {
         NodeInstallMethod::Nvm => apply_nvm_update(&update.available_version, log_sender),
@@ -239,14 +303,21 @@ pub(super) fn node_apply_updates(
             }
             stream_checked("winget", &args, log_sender)
         }
-        NodeInstallMethod::Homebrew => {
-            stream_checked("brew", &["upgrade".to_owned(), "node".to_owned()], log_sender)
-        }
+        NodeInstallMethod::Homebrew => stream_checked(
+            "brew",
+            &["upgrade".to_owned(), "node".to_owned()],
+            log_sender,
+        ),
         NodeInstallMethod::OfficialMsi => {
             install_official_node_msi(&update.available_version, log_sender)
         }
         NodeInstallMethod::Unknown => Err(UpdaterError::Message(
-            "node: не удалось определить способ установки; обновите Node.js вручную через исходный менеджер или официальный установщик".to_owned(),
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_install_method_unknown
+            )
+            .to_owned(),
         )),
     }
 }
@@ -308,12 +379,24 @@ fn nvm_shell_args(nvm_dir: &Path, nvm_script: &Path, args: &[&str]) -> Vec<Strin
 
 #[cfg(unix)]
 fn apply_nvm_update(version: &str, log_sender: &Sender<String>) -> Result<(), UpdaterError> {
-    let node_path = find_command("node")
-        .ok_or_else(|| UpdaterError::Message("node: команда не найдена для nvm".to_owned()))?;
+    let node_path = find_command("node").ok_or_else(|| {
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_nvm_command_missing
+            )
+            .to_owned(),
+        )
+    })?;
     let script = nvm_script_path(&node_path).ok_or_else(|| {
         UpdaterError::Message(
-            "node: обнаружен nvm, но не найден его скрипт nvm.sh; задайте NVM_DIR или проверьте путь node"
-                .to_owned(),
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_nvm_script_missing
+            )
+            .to_owned(),
         )
     })?;
 
@@ -327,11 +410,25 @@ fn apply_nvm_update(version: &str, log_sender: &Sender<String>) -> Result<(), Up
 
 #[cfg(unix)]
 fn nvm_shell_command(script: &Path, args: &[&str]) -> Result<(String, Vec<String>), UpdaterError> {
-    let nvm_dir = script
-        .parent()
-        .ok_or_else(|| UpdaterError::Message("node: некорректный путь к nvm.sh".to_owned()))?;
+    let nvm_dir = script.parent().ok_or_else(|| {
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_nvm_script_invalid
+            )
+            .to_owned(),
+        )
+    })?;
     let bash = find_command("bash").ok_or_else(|| {
-        UpdaterError::Message("node: для запуска nvm.sh требуется bash".to_owned())
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                node_bash_required
+            )
+            .to_owned(),
+        )
     })?;
     Ok((bash, nvm_shell_args(nvm_dir, script, args)))
 }
@@ -405,13 +502,14 @@ fn is_official_windows_node_path(path: &str) -> bool {
 }
 
 fn node_install_method_label(method: NodeInstallMethod) -> &'static str {
+    let language = crate::localization::current_language();
     match method {
         NodeInstallMethod::Nvm => "nvm",
         NodeInstallMethod::Fnm => "fnm",
         NodeInstallMethod::Winget(_) => "winget",
         NodeInstallMethod::Homebrew => "Homebrew",
-        NodeInstallMethod::OfficialMsi => "официальный MSI",
-        NodeInstallMethod::Unknown => "неизвестен",
+        NodeInstallMethod::OfficialMsi => crate::tr!(language, updater, node_official_msi),
+        NodeInstallMethod::Unknown => crate::tr!(language, updater, unknown),
     }
 }
 
@@ -420,14 +518,21 @@ fn install_official_node_msi(
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
     let architecture = node_msi_architecture().ok_or_else(|| {
-        UpdaterError::Message(format!(
-            "node: официальный MSI не поддерживает архитектуру {}",
-            std::env::consts::ARCH
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            node_msi_unsupported_arch,
+            architecture = std::env::consts::ARCH
         ))
     })?;
     let url = node_msi_url(version, architecture);
     let path = std::env::temp_dir().join(format!("node-v{version}-{architecture}.msi"));
-    let _ = log_sender.send(format!("node: загрузка официального установщика {url}"));
+    let _ = log_sender.send(crate::tr!(
+        crate::localization::current_language(),
+        updater,
+        node_downloading_installer,
+        url = url
+    ));
     download_file(&url, &path)?;
 
     let args = vec![
@@ -463,15 +568,21 @@ fn node_msi_url(version: &str, architecture: &str) -> String {
 fn download_file(url: &str, path: &Path) -> Result<(), UpdaterError> {
     let mut response = http_client()?.get(url).send()?.error_for_status()?;
     let mut file = File::create(path).map_err(|error| {
-        UpdaterError::Message(format!(
-            "node: не удалось создать {}: {error}",
-            path.display()
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            node_create_file_failed,
+            path = path.display(),
+            error = error
         ))
     })?;
     io::copy(&mut response, &mut file).map_err(|error| {
-        UpdaterError::Message(format!(
-            "node: не удалось сохранить {}: {error}",
-            path.display()
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            node_save_file_failed,
+            path = path.display(),
+            error = error
         ))
     })?;
     Ok(())
@@ -496,7 +607,12 @@ fn check_cli_version(
     let current_output = capture_command(program, &["--version".to_owned()])?;
     ensure_success(program, &current_output)?;
     let current = version_from_output(&current_output.stdout).ok_or_else(|| {
-        UpdaterError::Message(format!("{program}: не удалось определить текущую версию"))
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            package_manager_version_unknown,
+            program = program
+        ))
     })?;
 
     let latest_output = capture_command(
@@ -510,8 +626,11 @@ fn check_cli_version(
     )?;
     ensure_success(registry_program, &latest_output)?;
     let latest = version_from_output(&latest_output.stdout).ok_or_else(|| {
-        UpdaterError::Message(format!(
-            "{program}: npm registry не вернул последнюю версию"
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            npm_registry_latest_missing,
+            program = program
         ))
     })?;
 
@@ -713,12 +832,36 @@ mod tests {
 
     #[test]
     fn reads_latest_version_from_official_node_index() {
-        let releases = serde_json::json!([
-            { "version": "v26.5.0", "lts": false },
-            { "version": "v26.4.0", "lts": false }
-        ]);
+        let releases = parse_node_release_index(
+            br#"[{"version":"v26.5.0","lts":false},{"version":"v26.4.0","lts":false}]"#,
+            "application/json",
+        )
+        .expect("official release index should parse");
 
         assert_eq!(latest_node_version(&releases).as_deref(), Some("26.5.0"));
+    }
+
+    #[test]
+    fn malformed_node_release_index_reports_content_type_and_proxy_hint() {
+        let russian_error =
+            crate::localization::with_language(crate::localization::Language::Russian, || {
+                parse_node_release_index(b"<!doctype html>", "text/html")
+                    .unwrap_err()
+                    .to_string()
+            });
+
+        assert!(russian_error.contains("Content-Type: text/html"));
+        assert!(russian_error.contains(NODE_RELEASE_INDEX_URL));
+        assert!(russian_error.contains("Проверьте подключение или прокси"));
+        assert!(!russian_error.contains("<!doctype html>"));
+
+        let english_error =
+            crate::localization::with_language(crate::localization::Language::English, || {
+                parse_node_release_index(b"not json", "text/plain")
+                    .unwrap_err()
+                    .to_string()
+            });
+        assert!(english_error.contains("Check your connection or proxy"));
     }
 
     #[test]

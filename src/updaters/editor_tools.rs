@@ -314,8 +314,13 @@ fn apply_editor_extensions(
         let args = editor_cli_args(program, extension_install_args(update));
         if let Err(error) = stream_checked(&command, &args, log_sender) {
             let display_name = update.display_name();
-            let _ = log_sender.send(format!(
-                "{program}: расширение `{display_name}` не обновлено: {error}"
+            let _ = log_sender.send(crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                editor_extension_update_failed,
+                program = program,
+                extension = display_name,
+                error = error
             ));
             failed_updates.push(format!("{display_name}: {error}"));
         }
@@ -324,10 +329,13 @@ fn apply_editor_extensions(
     if failed_updates.is_empty() {
         Ok(())
     } else {
-        Err(UpdaterError::Message(format!(
-            "{program}: не удалось обновить {} расширений: {}",
-            failed_updates.len(),
-            failed_updates.join(", ")
+        Err(UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            editor_extensions_update_failed,
+            program = program,
+            count = failed_updates.len(),
+            errors = failed_updates.join(", ")
         )))
     }
 }
@@ -345,8 +353,14 @@ fn extension_install_args(update: &PackageUpdate) -> Vec<String> {
 }
 
 fn editor_command(program: &str) -> Result<String, UpdaterError> {
-    find_command(program)
-        .ok_or_else(|| UpdaterError::Message(format!("{program}: команда редактора не найдена")))
+    find_command(program).ok_or_else(|| {
+        UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            editor_command_missing,
+            program = program
+        ))
+    })
 }
 
 fn command_name(command: &str) -> &str {

@@ -7,6 +7,7 @@ mod state;
 mod views;
 
 use crate::app::{ModuleUpdateProgress, SelectionFilter, UpdateCancellation};
+use crate::localization::Language;
 use crate::model::ModuleSnapshot;
 use crate::repaint::{self, RepaintSender};
 use crate::system;
@@ -60,6 +61,7 @@ fn module_selection_state(selected_count: usize, total_count: usize) -> ModuleSe
 /// Корневое состояние и контроллер GUI-приложения.
 pub struct GuiApp {
     filter: SelectionFilter,
+    language: Language,
     events_tx: RepaintSender<GuiEvent>,
     events_rx: Receiver<GuiEvent>,
     modules: Vec<ModuleSnapshot>,
@@ -81,6 +83,13 @@ pub struct GuiApp {
 
 impl App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
+        let language = self.language;
+        crate::localization::with_language(language, || self.show_ui(ui, _frame));
+    }
+}
+
+impl GuiApp {
+    fn show_ui(&mut self, ui: &mut egui::Ui, _frame: &mut Frame) {
         self.process_events();
 
         if self.close_after_elevation {
@@ -107,6 +116,7 @@ impl App for GuiApp {
 pub fn launch_gui(
     filter: SelectionFilter,
     auto_yes: bool,
+    language: Option<Language>,
     elevation_ready_file: Option<PathBuf>,
     elevation_state_file: Option<PathBuf>,
 ) -> anyhow::Result<()> {
@@ -128,6 +138,7 @@ pub fn launch_gui(
             let app = GuiApp::new(
                 filter,
                 auto_yes,
+                language,
                 &creation_context.egui_ctx,
                 previous_modules,
             );

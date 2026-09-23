@@ -69,16 +69,33 @@ pub(super) fn apply_apt_get_updates(
     selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let _ = log_sender.send("apt-get: обновление индексов пакетов".to_owned());
+    let _ = log_sender.send(
+        crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            apt_get_refreshing
+        )
+        .to_owned(),
+    );
     stream_checked_refs("apt-get", &["update"], log_sender)?;
 
     let subcommand = detect_apt_get_upgrade_subcommand();
     let args = apt_get_update_args(force_yes, selected_updates, &subcommand)?;
 
     let description = if selected_updates.is_empty() {
-        format!("выбран режим обновления `{subcommand}`")
+        crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            selected_update_mode,
+            subcommand = subcommand
+        )
     } else {
-        "обновляются только выбранные пакеты".to_owned()
+        crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            updating_selected_packages
+        )
+        .to_owned()
     };
     let _ = log_sender.send(format!("apt-get: {description}"));
 
@@ -402,9 +419,12 @@ pub(super) fn brew_apply_updates(
     let mut casks = Vec::new();
     for update in selected_updates {
         let Some(name) = update.name.strip_prefix("brew:") else {
-            return Err(UpdaterError::Message(format!(
-                "brew: некорректное имя выбранного пакета `{}`",
-                update.name
+            return Err(UpdaterError::Message(crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                invalid_package_name,
+                manager = "brew",
+                package = update.name
             )));
         };
         if update.scope.as_deref() == Some("cask") {

@@ -21,8 +21,11 @@ pub(super) fn http_client() -> Result<&'static Client, UpdaterError> {
             .map_err(|error| error.to_string())
     }) {
         Ok(client) => Ok(client),
-        Err(error) => Err(UpdaterError::Message(format!(
-            "не удалось создать HTTP-клиент: {error}"
+        Err(error) => Err(UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            create_http_client_error,
+            error = error
         ))),
     }
 }

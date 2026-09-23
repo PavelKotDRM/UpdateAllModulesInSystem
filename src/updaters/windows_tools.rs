@@ -30,8 +30,16 @@ pub(super) fn powershell_program() -> Option<&'static str> {
 }
 
 pub(super) fn run_powershell_capture(script: &str) -> Result<CommandOutput, UpdaterError> {
-    let program = powershell_program()
-        .ok_or_else(|| UpdaterError::Message("powershell не найден".to_owned()))?;
+    let program = powershell_program().ok_or_else(|| {
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                powershell_missing
+            )
+            .to_owned(),
+        )
+    })?;
     let args = vec![
         "-NoProfile".to_owned(),
         "-NonInteractive".to_owned(),
@@ -80,9 +88,11 @@ pub(super) fn windows_update_apply_updates(
     selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let _ = log_sender.send(format!(
-        "Windows Update: доступно обновлений: {}. Автоматическая установка отключена; откройте Параметры → Центр обновления Windows и запустите обновление вручную",
-        selected_updates.len()
+    let _ = log_sender.send(crate::tr!(
+        crate::localization::current_language(),
+        updater,
+        windows_update_summary,
+        count = selected_updates.len()
     ));
     Ok(())
 }
@@ -213,8 +223,12 @@ pub(super) fn winget_apply_updates(
         let output = stream_command("winget", &args, log_sender)?;
         if !output.success {
             let reason = winget_failure_reason(&output, &target_value);
-            let _ = log_sender.send(format!(
-                "winget: пакет `{display_name}` не обновлен: {reason}"
+            let _ = log_sender.send(crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                winget_package_update_failed,
+                package = display_name,
+                reason = reason
             ));
             failed_packages.push(display_name);
         }
@@ -223,10 +237,12 @@ pub(super) fn winget_apply_updates(
     if failed_packages.is_empty() {
         Ok(())
     } else {
-        Err(UpdaterError::Message(format!(
-            "winget: не удалось обновить {} пакетов: {}",
-            failed_packages.len(),
-            failed_packages.join(", ")
+        Err(UpdaterError::Message(crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            winget_packages_update_failed,
+            count = failed_packages.len(),
+            errors = failed_packages.join(", ")
         )))
     }
 }
@@ -239,14 +255,20 @@ fn winget_failure_reason(output: &CommandOutput, package_id: &str) -> String {
         || merged_lower.contains("0x80072ee2")
         || merged_lower.contains("internetopenurl() failed")
     {
-        return format!(
-            "истекло время ожидания загрузки из Интернета (0x80072EE2); проверьте соединение, прокси или доступ к адресу загрузки и повторите `winget upgrade --id {package_id} --exact`"
+        return crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            winget_download_timeout,
+            package_id = package_id
         );
     }
 
     if merged_lower.contains("install technology is different") {
-        return format!(
-            "технология установки новой версии отличается от установленной; выполните `winget uninstall --id {package_id} --exact`, затем `winget install --id {package_id} --exact`"
+        return crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            winget_install_method_changed,
+            package_id = package_id
         );
     }
 
@@ -256,10 +278,25 @@ fn winget_failure_reason(output: &CommandOutput, package_id: &str) -> String {
 
     let stdout = output.stdout.trim();
     if !stdout.is_empty() {
-        return format!("{stdout} (код {:?})", output.exit_code);
+        return crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            command_exit_code_with_output,
+            output = stdout,
+            code = output
+                .exit_code
+                .map_or_else(|| "None".to_owned(), |code| code.to_string())
+        );
     }
 
-    format!("код завершения {:?}", output.exit_code)
+    crate::tr!(
+        crate::localization::current_language(),
+        updater,
+        command_exit_code,
+        code = output
+            .exit_code
+            .map_or_else(|| "None".to_owned(), |code| code.to_string())
+    )
 }
 
 enum WingetTargetKind {
@@ -382,7 +419,12 @@ fn msys2_pacman_error(output: CommandOutput) -> UpdaterError {
         program: "pacman".to_owned(),
         code: output.exit_code,
         stderr: if details.trim().is_empty() {
-            "pacman не сообщил подробностей".to_owned()
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                pacman_no_details
+            )
+            .to_owned()
         } else {
             details
         },
@@ -506,9 +548,9 @@ mod tests {
 
         assert!(result.is_ok());
         let message = log_rx.recv().expect("recommendation should be logged");
-        assert!(message.contains("доступно обновлений: 2"));
-        assert!(message.contains("Центр обновления Windows"));
-        assert!(message.contains("вручную"));
+        assert!(message.contains("available update count: 2"));
+        assert!(message.contains("Windows Update"));
+        assert!(message.contains("manually"));
     }
 
     #[test]
@@ -522,8 +564,8 @@ mod tests {
 
         let reason = winget_failure_reason(&output, "Kitware.CMake");
 
-        assert!(reason.contains("истекло время ожидания"));
-        assert!(reason.contains("прокси"));
+        assert!(reason.contains("download timed out"));
+        assert!(reason.contains("proxy"));
         assert!(reason.contains("winget upgrade --id Kitware.CMake --exact"));
         assert!(!reason.contains("unknown error"));
     }

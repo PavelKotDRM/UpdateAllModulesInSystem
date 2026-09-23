@@ -29,6 +29,7 @@ The project supports two operating modes:
 - Runs scans and updates in the background in the GUI.
 - Groups logs by module in a dedicated GUI tab.
 - Displays each module's update stage directly in the GUI (`queued`, `running`, `completed`, `error`).
+- Uses English by default and includes Russian translations; the language catalog is designed to accommodate additional translations.
 
 ## Supported Tools
 
@@ -97,6 +98,7 @@ cargo run -- --check
 cargo run -- --check --skip-system
 cargo run -- --check --only vscode-extensions
 cargo run -- --check --only node --only npm --only pnpm
+cargo run -- --language ru --check
 cargo run -- --yes --verbose
 cargo run -- --gui
 ```
@@ -108,6 +110,7 @@ Available flags:
 - `-c, --check` - only check for available updates.
 - `-y, --yes` - automatically confirm updates.
 - `--gui` - explicitly open the GUI.
+- `--language <en|ru>` - choose the CLI language or override the saved GUI language for this launch.
 - `-v, --verbose` - show detailed output.
 - `--skip-system` - skip system package managers.
 - `--skip-pip` - skip `pip`.
@@ -143,6 +146,7 @@ The graphical mode provides:
 - a module selection menu with checkboxes for precise control over what is updated;
 - `selected/total` and `with updates/total` counters;
 - persistence of selected modules between GUI restarts;
+- a language selector in Settings; the selected language is saved between restarts;
 - storage of settings in the system configuration directory with atomic JSON writes;
 - persistence of the `-y` automatic confirmation checkbox between GUI restarts;
 - an automatic confirmation `-y` checkbox;
@@ -260,17 +264,6 @@ The compiled binary archives for the supported platforms will then appear in Git
 - VS Code profiles are detected from local user data. Extensions are checked and installed separately for each existing profile.
 - On Windows, non-UTF-8 output from external utilities can be decoded using `WINDOWS-1251`, `CP866`, with lossy UTF-8 as a fallback.
 - The module order in the final table and update results remains the same as in the updater registry, even when the tasks themselves run in parallel.
-
-## Code Review Remediation Checklist
-
-- [x] Honor package-level selections for targeted updaters and clearly mark full-system-only update modes.
-- [x] Respect `--yes` when running `apt-get` and MSYS2 updates.
-- [x] Surface failed update checks instead of reporting the module as up to date.
-- [x] Cancel complete updater process trees and report termination failures.
-- [x] Update Unix Node.js installations managed by the standard `nvm` shell script.
-- [x] Keep module/package selection synchronized and persist an explicitly empty selection.
-- [x] Parse package versions from pacman, DNF/Yum, zypper, snap, and rustup output.
-- [x] Allow elevation for installed elevated modules when the GUI is filtered with `--only`.
 
 ## Implementation Status
 

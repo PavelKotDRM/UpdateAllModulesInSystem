@@ -4,6 +4,7 @@
 //! выполняется в режиме best effort: отсутствующий или повреждённый файл даёт
 //! настройки по умолчанию, не блокируя запуск приложения.
 
+use crate::localization::Language;
 use crate::model::ModuleSnapshot;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +19,7 @@ const LEGACY_GUI_STATE_FILE: &str = ".update_all_modules_gui_state.json";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct GuiState {
+    pub(super) language: Option<Language>,
     pub(super) selected_modules: Option<Vec<String>>,
     pub(super) auto_yes: Option<bool>,
     pub(super) show_not_found: Option<bool>,
@@ -60,16 +62,23 @@ pub(super) fn load_gui_state() -> GuiState {
 /// Возвращает ошибку, если системный каталог конфигурации недоступен, состояние
 /// не удалось сериализовать или атомарно записать в файл.
 pub(super) fn save_gui_state(
-    selection: &BTreeSet<String>,
+    language: Language,
+    selection: Option<&BTreeSet<String>>,
     selected_updates: &BTreeMap<String, BTreeSet<String>>,
     auto_yes: bool,
     show_not_found: bool,
     show_up_to_date: bool,
 ) -> anyhow::Result<()> {
-    let path = gui_state_path()
-        .ok_or_else(|| anyhow::anyhow!("не удалось определить каталог конфигурации"))?;
+    let path = gui_state_path().ok_or_else(|| {
+        anyhow::anyhow!(crate::tr!(
+            crate::localization::current_language(),
+            gui,
+            error_config_directory
+        ))
+    })?;
     let state = GuiState {
-        selected_modules: Some(selection.iter().cloned().collect()),
+        language: Some(language),
+        selected_modules: selection.map(|selection| selection.iter().cloned().collect()),
         auto_yes: Some(auto_yes),
         show_not_found: Some(show_not_found),
         show_up_to_date: Some(show_up_to_date),
@@ -184,6 +193,7 @@ pub(super) fn take_elevation_modules(path: &std::path::Path) -> Option<Vec<Modul
 #[cfg(test)]
 mod tests {
     use super::{GuiState, write_atomically};
+    use crate::localization::Language;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -221,5 +231,14 @@ mod tests {
 
         assert_eq!(explicitly_empty.selected_modules, Some(Vec::new()));
         assert_eq!(not_saved.selected_modules, None);
+        assert_eq!(not_saved.language, None);
+    }
+
+    #[test]
+    fn gui_state_persists_language_using_language_codes() {
+        let state: GuiState =
+            serde_json::from_str(r#"{"language":"ru","selected_updates":{}}"#).unwrap();
+
+        assert_eq!(state.language, Some(Language::Russian));
     }
 }

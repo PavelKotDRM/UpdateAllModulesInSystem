@@ -9,6 +9,7 @@ use crate::app::{
     ModuleUpdateProgress, SelectionFilter, UpdateCancellation, discover_modules_with_progress,
     run_updates_with_progress_cancellable,
 };
+use crate::localization::Language;
 use crate::model::{ModuleSnapshot, ModuleStatus};
 use crate::{repaint, system};
 use eframe::egui;
@@ -23,11 +24,15 @@ impl GuiApp {
     pub fn new(
         filter: SelectionFilter,
         auto_yes: bool,
+        language_override: Option<Language>,
         context: &egui::Context,
         previous_modules: Option<Vec<ModuleSnapshot>>,
     ) -> Self {
         let (events_tx, events_rx) = repaint::channel(context);
         let persisted_state = load_gui_state();
+        let language = language_override
+            .or(persisted_state.language)
+            .unwrap_or_default();
         let persisted_selection = persisted_state
             .selected_modules
             .map(|selected| selected.into_iter().collect());
@@ -41,13 +46,14 @@ impl GuiApp {
         let show_up_to_date = persisted_state.show_up_to_date.unwrap_or(false);
         let mut app = Self {
             filter,
+            language,
             events_tx,
             events_rx,
             modules: previous_modules.unwrap_or_default(),
             logs: BTreeMap::new(),
             busy: false,
             auto_yes,
-            status_line: String::from("Ожидание запуска"),
+            status_line: crate::tr!(language, gui, status_waiting).to_owned(),
             started_scan: false,
             persisted_selection,
             persisted_update_selection,
@@ -59,7 +65,7 @@ impl GuiApp {
             elevation_pending: false,
             close_after_elevation: false,
         };
-        app.start_scan();
+        crate::localization::with_language(language, || app.start_scan());
         app
     }
 
@@ -69,15 +75,18 @@ impl GuiApp {
         }
         self.started_scan = true;
         self.busy = true;
-        self.status_line = String::from("Сканирование...");
-        self.append_log(String::from("[system] Проверка обновлений запущена"));
+        self.status_line = crate::tr!(self.language, gui, status_scanning).to_owned();
+        self.append_log(crate::tr!(self.language, gui, log_scan_started).to_owned());
         let filter = self.filter.clone();
         let sender = self.events_tx.clone();
+        let language = self.language;
         thread::spawn(move || {
-            let modules = discover_modules_with_progress(&filter, |completed, total| {
-                let _ = sender.send(GuiEvent::ScanProgress { completed, total });
+            crate::localization::with_language(language, || {
+                let modules = discover_modules_with_progress(&filter, |completed, total| {
+                    let _ = sender.send(GuiEvent::ScanProgress { completed, total });
+                });
+                let _ = sender.send(GuiEvent::ScanFinished(modules));
             });
-            let _ = sender.send(GuiEvent::ScanFinished(modules));
         });
     }
 
@@ -86,47 +95,70 @@ impl GuiApp {
             return;
         }
         self.busy = true;
-        self.status_line = String::from("Обновление...");
+        self.status_line = crate::tr!(self.language, gui, status_updating).to_owned();
         let modules = self.modules.clone();
         self.module_progress.clear();
         let sender = self.events_tx.clone();
         let force_yes = self.auto_yes;
+        let language = self.language;
         let cancellation = UpdateCancellation::default();
         self.update_cancellation = Some(cancellation.clone());
         thread::spawn(move || {
-            let (log_tx, log_rx) = mpsc::channel::<String>();
-            let (progress_tx, progress_rx) = mpsc::channel::<ModuleUpdateProgress>();
-            let log_sender = sender.clone();
-            thread::spawn(move || {
-                while let Ok(message) = log_rx.recv() {
-                    let _ = log_sender.send(GuiEvent::Log(message));
-                }
-            });
+            crate::localization::with_language(language, || {
+                let (log_tx, log_rx) = mpsc::channel::<String>();
+                let (progress_tx, progress_rx) = mpsc::channel::<ModuleUpdateProgress>();
+                let log_sender = sender.clone();
+                thread::spawn(move || {
+                    while let Ok(message) = log_rx.recv() {
+                        let _ = log_sender.send(GuiEvent::Log(message));
+                    }
+                });
 
-            let progress_sender = sender.clone();
-            thread::spawn(move || {
-                while let Ok(progress) = progress_rx.recv() {
-                    let _ = progress_sender.send(GuiEvent::ModuleProgress(progress));
-                }
-            });
+                let progress_sender = sender.clone();
+                thread::spawn(move || {
+                    while let Ok(progress) = progress_rx.recv() {
+                        let _ = progress_sender.send(GuiEvent::ModuleProgress(progress));
+                    }
+                });
 
-            let results = run_updates_with_progress_cancellable(
-                &modules,
-                force_yes,
-                &log_tx,
-                Some(progress_tx),
-                cancellation.clone(),
-            );
-            let summary = if cancellation.is_cancelled() {
-                String::from("Обновление отменено")
-            } else if results.is_empty() {
-                String::from("Нет выбранных модулей с доступными обновлениями")
-            } else if results.iter().all(|(_, result)| result.is_ok()) {
-                String::from("Обновление успешно завершено")
-            } else {
-                String::from("Обновление завершено с ошибками")
-            };
-            let _ = sender.send(GuiEvent::UpdateFinished(summary));
+                let results = run_updates_with_progress_cancellable(
+                    &modules,
+                    force_yes,
+                    &log_tx,
+                    Some(progress_tx),
+                    cancellation.clone(),
+                );
+                let summary = if cancellation.is_cancelled() {
+                    crate::tr!(
+                        crate::localization::current_language(),
+                        gui,
+                        summary_update_cancelled
+                    )
+                    .to_owned()
+                } else if results.is_empty() {
+                    crate::tr!(
+                        crate::localization::current_language(),
+                        gui,
+                        summary_no_selected_updates
+                    )
+                    .to_owned()
+                } else if results.iter().all(|(_, result)| result.is_ok()) {
+                    crate::tr!(
+                        crate::localization::current_language(),
+                        gui,
+                        summary_update_success
+                    )
+                    .to_owned()
+                } else {
+                    crate::tr!(
+                        crate::localization::current_language(),
+                        gui,
+                        summary_update_errors
+                    )
+                    .to_owned()
+                };
+                let _ = sender.send(GuiEvent::UpdateFinished(summary));
+            });
         });
     }
 
@@ -140,15 +172,17 @@ impl GuiApp {
 
         let termination_errors = cancellation.cancel();
         if termination_errors.is_empty() {
-            self.status_line = String::from("Отмена запрошена: завершаются процессы обновления...");
-            self.append_log(String::from(
-                "[system] Отмена запрошена; процессы обновления завершаются, новые модули запускаться не будут",
-            ));
+            self.status_line = crate::tr!(self.language, gui, status_cancel_requested).to_owned();
+            self.append_log(crate::tr!(self.language, gui, log_cancel_requested).to_owned());
         } else {
-            self.status_line =
-                String::from("Отмена запрошена, но не все процессы удалось остановить");
+            self.status_line = crate::tr!(self.language, gui, status_cancel_incomplete).to_owned();
             for error in termination_errors {
-                self.append_log(format!("[system] Ошибка отмены: {error}"));
+                self.append_log(crate::tr!(
+                    self.language,
+                    gui,
+                    log_cancel_error,
+                    error = error
+                ));
             }
         }
     }
@@ -172,30 +206,41 @@ impl GuiApp {
 
         let elevated_module_names = Self::elevated_module_names(&self.modules);
         if elevated_module_names.is_empty() {
-            self.status_line = String::from("Нет модулей, требующих повышенных прав");
+            self.status_line =
+                crate::tr!(self.language, gui, status_no_elevated_modules).to_owned();
             return;
         }
 
         let elevation_state_file = match save_elevation_modules(&self.modules) {
             Ok(path) => path,
             Err(error) => {
-                let message = format!("Не удалось сохранить результаты сканирования: {error}");
+                let message =
+                    crate::tr!(self.language, gui, error_save_scan_results, error = error);
                 self.status_line = message.clone();
-                self.append_log(format!("[system] Ошибка: {message}"));
+                self.append_log(crate::tr!(
+                    self.language,
+                    gui,
+                    error_prefix,
+                    error = message
+                ));
                 return;
             }
         };
 
         self.elevation_pending = true;
-        self.status_line = String::from("Запрос повышенных прав...");
+        self.status_line = crate::tr!(self.language, gui, status_request_elevation).to_owned();
         let sender = self.events_tx.clone();
+        let language = self.language;
         thread::spawn(move || {
-            let result = system::restart_elevated(&elevated_module_names, &elevation_state_file)
-                .map_err(|error| error.to_string());
-            if result.is_err() {
-                let _ = fs::remove_file(elevation_state_file);
-            }
-            let _ = sender.send(GuiEvent::ElevationFinished(result));
+            crate::localization::with_language(language, || {
+                let result =
+                    system::restart_elevated(&elevated_module_names, &elevation_state_file)
+                        .map_err(|error| error.to_string());
+                if result.is_err() {
+                    let _ = fs::remove_file(elevation_state_file);
+                }
+                let _ = sender.send(GuiEvent::ElevationFinished(result));
+            });
         });
     }
 
@@ -284,8 +329,11 @@ impl GuiApp {
     pub(super) fn show_selection_menu(&mut self, ui: &mut egui::Ui) {
         let show_not_found = self.show_not_found;
         let show_up_to_date = self.show_up_to_date;
-        ui.menu_button("Выбор модулей", |ui| {
-            if ui.button("Отметить все видимые").clicked() {
+        ui.menu_button(crate::tr!(self.language, gui, selection_menu), |ui| {
+            if ui
+                .button(crate::tr!(self.language, gui, select_visible))
+                .clicked()
+            {
                 for module in &mut self.modules {
                     if Self::module_is_visible(module, show_not_found, show_up_to_date) {
                         Self::set_module_selected(module, true);
@@ -295,7 +343,10 @@ impl GuiApp {
                 ui.close();
             }
 
-            if ui.button("Снять выбор с видимых").clicked() {
+            if ui
+                .button(crate::tr!(self.language, gui, deselect_visible))
+                .clicked()
+            {
                 for module in &mut self.modules {
                     if Self::module_is_visible(module, show_not_found, show_up_to_date) {
                         Self::set_module_selected(module, false);
@@ -305,12 +356,18 @@ impl GuiApp {
                 ui.close();
             }
 
-            if ui.button("Инвертировать выбор").clicked() {
+            if ui
+                .button(crate::tr!(self.language, gui, invert_selection))
+                .clicked()
+            {
                 self.invert_selection();
                 ui.close();
             }
 
-            if ui.button("Выбрать только с обновлениями").clicked() {
+            if ui
+                .button(crate::tr!(self.language, gui, select_only_updates))
+                .clicked()
+            {
                 self.select_only_updates();
                 ui.close();
             }
@@ -337,37 +394,46 @@ impl GuiApp {
     }
 
     pub(super) fn persist_state(&mut self) {
-        let selection = self
-            .modules
-            .iter()
-            .filter(|module| module.selected)
-            .map(|module| module.name.clone())
-            .collect::<BTreeSet<_>>();
-        self.persisted_selection = Some(selection.clone());
+        let selection = if self.started_scan && self.modules.is_empty() {
+            self.persisted_selection.clone()
+        } else {
+            let selection = self
+                .modules
+                .iter()
+                .filter(|module| module.selected)
+                .map(|module| module.name.clone())
+                .collect::<BTreeSet<_>>();
+            self.persisted_selection = Some(selection.clone());
 
-        self.persisted_update_selection = self
-            .modules
-            .iter()
-            .map(|module| {
-                let selected_updates = module
-                    .updates
-                    .iter()
-                    .filter(|update| update.selected)
-                    .map(|update| update.selection_key())
-                    .collect::<BTreeSet<_>>();
-                (module.name.clone(), selected_updates)
-            })
-            .collect();
+            self.persisted_update_selection = self
+                .modules
+                .iter()
+                .map(|module| {
+                    let selected_updates = module
+                        .updates
+                        .iter()
+                        .filter(|update| update.selected)
+                        .map(|update| update.selection_key())
+                        .collect::<BTreeSet<_>>();
+                    (module.name.clone(), selected_updates)
+                })
+                .collect();
+            Some(selection)
+        };
 
         if let Err(error) = save_gui_state(
-            &selection,
+            self.language,
+            selection.as_ref(),
             &self.persisted_update_selection,
             self.auto_yes,
             self.show_not_found,
             self.show_up_to_date,
         ) {
-            self.append_log(format!(
-                "[system] Не удалось сохранить состояние GUI: {error}"
+            self.append_log(crate::tr!(
+                self.language,
+                gui,
+                error_save_state,
+                error = error
             ));
         }
     }
@@ -400,7 +466,13 @@ impl GuiApp {
                         .insert(progress.module_name.clone(), progress);
                 }
                 GuiEvent::ScanProgress { completed, total } => {
-                    self.status_line = format!("Сканирование: проверено {completed}/{total}");
+                    self.status_line = crate::tr!(
+                        self.language,
+                        gui,
+                        status_scan_progress,
+                        completed = completed,
+                        total = total
+                    );
                 }
                 GuiEvent::ScanFinished(modules) => {
                     let module_count = modules.len();
@@ -414,8 +486,12 @@ impl GuiApp {
                     self.apply_persisted_selection();
                     self.busy = false;
                     self.started_scan = false;
-                    let message = format!(
-                        "Проверка завершена: модулей {module_count}, доступно обновлений {update_count}"
+                    let message = crate::tr!(
+                        self.language,
+                        gui,
+                        status_scan_complete,
+                        modules = module_count,
+                        updates = update_count
                     );
                     self.append_log(format!("[system] {message}"));
                     self.status_line = message;
@@ -431,13 +507,19 @@ impl GuiApp {
                 GuiEvent::ElevationFinished(Ok(())) => {
                     self.elevation_pending = false;
                     self.close_after_elevation = true;
-                    self.status_line = String::from("Запущено с повышенными правами");
+                    self.status_line =
+                        crate::tr!(self.language, gui, status_elevated_success).to_owned();
                 }
                 GuiEvent::ElevationFinished(Err(error)) => {
                     self.elevation_pending = false;
-                    let message = format!("Не удалось повысить права: {error}");
+                    let message = crate::tr!(self.language, gui, error_elevate, error = error);
                     self.status_line = message.clone();
-                    self.append_log(format!("[system] Ошибка: {message}"));
+                    self.append_log(crate::tr!(
+                        self.language,
+                        gui,
+                        error_prefix,
+                        error = message
+                    ));
                 }
             }
         }
@@ -479,6 +561,7 @@ mod tests {
         )];
         let mut app = GuiApp {
             filter: SelectionFilter::default(),
+            language: Language::English,
             events_tx: repaint::channel(&egui::Context::default()).0,
             events_rx: mpsc::channel().1,
             modules: vec![module],
@@ -532,6 +615,7 @@ mod tests {
 
         let mut app = GuiApp {
             filter: SelectionFilter::default(),
+            language: Language::English,
             events_tx: repaint::channel(&egui::Context::default()).0,
             events_rx: mpsc::channel().1,
             modules: vec![ModuleSnapshot::new("npm", ModuleKind::Tool, false)],
@@ -565,6 +649,7 @@ mod tests {
     fn hides_up_to_date_modules_unless_enabled() {
         let app = GuiApp {
             filter: SelectionFilter::default(),
+            language: Language::English,
             events_tx: repaint::channel(&egui::Context::default()).0,
             events_rx: mpsc::channel().1,
             modules: Vec::new(),

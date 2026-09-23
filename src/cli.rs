@@ -1,25 +1,26 @@
 //! Определение CLI-аргументов приложения через `clap`.
 
+use crate::localization::Language;
 use clap::Parser;
 use std::path::PathBuf;
 
-const AFTER_HELP: &str = "РЕЖИМЫ:
-    Без аргументов             Запустить графический интерфейс
-    С любым CLI-параметром     Запустить режим командной строки
-    --gui                      Принудительно запустить графический интерфейс
+const AFTER_HELP: &str = "MODES:
+    No arguments                Start the graphical interface
+    With CLI arguments          Start command-line mode
+    --gui                       Explicitly start the graphical interface
 
-ПРИМЕРЫ:
+EXAMPLES:
     update_all_modules --check
     update_all_modules --check --skip-system
     update_all_modules --check --only vscode-extensions
     update_all_modules --check --only node --only npm --only pnpm
     update_all_modules --yes --verbose
 
-ИМЕНА МОДУЛЕЙ:
-    Системные: windows-update, winget, choco, apt, apt-get, dnf, yum, zypper,
+MODULE NAMES:
+    System: windows-update, winget, choco, apt, apt-get, dnf, yum, zypper,
                          pacman, apk, xbps, emerge, flatpak, snap, pkcon, brew
-    Python:    pip, uv
-    Инструменты: rustup, node, npm, pnpm, msys2, vscode-extensions,
+    Python: pip, uv
+    Tools: rustup, node, npm, pnpm, msys2, vscode-extensions,
                              vscode-insiders-extensions, vscodium-extensions,
                              cursor-extensions, windsurf-extensions, positron-extensions";
 
@@ -27,24 +28,33 @@ const AFTER_HELP: &str = "РЕЖИМЫ:
 #[command(
     name = "UpdateAllModules",
     version,
-    about = "Кроссплатформенная утилита обновления системы, pip и dev-tools",
-    long_about = "Проверяет и обновляет системные пакеты, Python-пакеты и инструменты разработки.\nБез аргументов запускает GUI; при наличии CLI-параметров работает в терминале.",
+    about = "Cross-platform utility for updating system packages, Python packages, and development tools",
+    long_about = "Checks for and installs updates for system package managers, Python packages, and development tools.\nStarts the GUI without arguments and command-line mode when CLI arguments are provided.",
     after_long_help = AFTER_HELP,
-    help_template = "{before-help}{name} {version}\n{about-with-newline}\nИспользование: {usage}\n\n{all-args}{after-help}"
+    help_template = "{before-help}{name} {version}\n{about-with-newline}\nUsage: {usage}\n\n{all-args}{after-help}"
 )]
-/// Параметры командной строки приложения.
+/// Command-line arguments for the application.
 pub struct Cli {
-    /// Только проверить обновления без применения.
-    #[arg(short = 'c', long = "check", help_heading = "РЕЖИМ ВЫПОЛНЕНИЯ")]
+    /// Only check for available updates without installing them.
+    #[arg(short = 'c', long = "check", help_heading = "EXECUTION MODE")]
     pub check: bool,
 
-    /// Автоматически подтверждать действия (`-y`).
-    #[arg(short = 'y', long = "yes", help_heading = "РЕЖИМ ВЫПОЛНЕНИЯ")]
+    /// Automatically confirm package-manager prompts (`-y`).
+    #[arg(short = 'y', long = "yes", help_heading = "EXECUTION MODE")]
     pub yes: bool,
 
-    /// Запустить графический интерфейс.
-    #[arg(long = "gui", help_heading = "РЕЖИМ ВЫПОЛНЕНИЯ")]
+    /// Start the graphical interface.
+    #[arg(long = "gui", help_heading = "EXECUTION MODE")]
     pub gui: bool,
+
+    /// Select the application language (en or ru).
+    #[arg(
+        long = "language",
+        value_enum,
+        value_name = "LANGUAGE",
+        help_heading = "APPLICATION SETTINGS"
+    )]
+    pub language: Option<Language>,
 
     /// Служебный файл подтверждения запуска GUI после повышения прав.
     #[arg(long, hide = true)]
@@ -54,38 +64,39 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub elevation_state_file: Option<PathBuf>,
 
-    /// Выводить подробные логи в CLI.
-    #[arg(short = 'v', long = "verbose", help_heading = "РЕЖИМ ВЫПОЛНЕНИЯ")]
+    /// Print detailed CLI logs.
+    #[arg(short = 'v', long = "verbose", help_heading = "EXECUTION MODE")]
     pub verbose: bool,
 
-    /// Пропустить системные менеджеры пакетов.
-    #[arg(long = "skip-system", help_heading = "ФИЛЬТРЫ МОДУЛЕЙ")]
+    /// Skip system package managers.
+    #[arg(long = "skip-system", help_heading = "MODULE FILTERS")]
     pub skip_system: bool,
 
-    /// Пропустить Python-пакеты.
-    #[arg(long = "skip-pip", help_heading = "ФИЛЬТРЫ МОДУЛЕЙ")]
+    /// Skip Python packages.
+    #[arg(long = "skip-pip", help_heading = "MODULE FILTERS")]
     pub skip_pip: bool,
 
-    /// Пропустить инструменты разработки.
-    #[arg(long = "skip-tools", help_heading = "ФИЛЬТРЫ МОДУЛЕЙ")]
+    /// Skip development tools.
+    #[arg(long = "skip-tools", help_heading = "MODULE FILTERS")]
     pub skip_tools: bool,
 
-    /// Включить только инструменты разработки.
+    /// Include only development tools.
     #[arg(
         long = "only-tools",
         conflicts_with = "skip_tools",
-        help_heading = "ФИЛЬТРЫ МОДУЛЕЙ"
+        help_heading = "MODULE FILTERS"
     )]
     pub only_tools: bool,
 
-    /// Ограничить обработку перечисленными именами модулей.
-    #[arg(long = "only", value_name = "NAME", help_heading = "ФИЛЬТРЫ МОДУЛЕЙ")]
+    /// Limit processing to the specified module names.
+    #[arg(long = "only", value_name = "NAME", help_heading = "MODULE FILTERS")]
     pub only: Vec<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::Cli;
+    use crate::localization::Language;
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -124,6 +135,12 @@ mod tests {
     }
 
     #[test]
+    fn parses_language_override() {
+        let cli = Cli::parse_from(["update_all_modules", "--language", "ru"]);
+        assert_eq!(cli.language, Some(Language::Russian));
+    }
+
+    #[test]
     fn parses_elevation_ready_file_without_showing_it_in_help() {
         let cli = Cli::parse_from([
             "update_all_modules",
@@ -154,10 +171,10 @@ mod tests {
     fn long_help_describes_modes_examples_and_module_names() {
         let help = Cli::command().render_long_help().to_string();
 
-        assert!(help.contains("РЕЖИМЫ:"));
-        assert!(help.contains("ПРИМЕРЫ:"));
-        assert!(help.contains("ИМЕНА МОДУЛЕЙ:"));
+        assert!(help.contains("MODES:"));
+        assert!(help.contains("EXAMPLES:"));
+        assert!(help.contains("MODULE NAMES:"));
         assert!(help.contains("vscode-extensions"));
-        assert!(help.contains("Без аргументов запускает GUI"));
+        assert!(help.contains("Starts the GUI without arguments"));
     }
 }
