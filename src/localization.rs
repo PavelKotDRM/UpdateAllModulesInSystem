@@ -240,6 +240,7 @@ pub(crate) struct UpdaterText {
     pub(crate) package_manager_version_unknown: &'static str,
     pub(crate) npm_registry_latest_missing: &'static str,
     pub(crate) editor_extension_update_failed: &'static str,
+    pub(crate) editor_extension_install_retrying: &'static str,
     pub(crate) editor_extensions_update_failed: &'static str,
     pub(crate) editor_command_missing: &'static str,
 }
@@ -586,6 +587,10 @@ mod tests {
             (
                 english.updater.editor_extension_update_failed,
                 russian.updater.editor_extension_update_failed,
+            ),
+            (
+                english.updater.editor_extension_install_retrying,
+                russian.updater.editor_extension_install_retrying,
             ),
             (
                 english.updater.editor_extensions_update_failed,

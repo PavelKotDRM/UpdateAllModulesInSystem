@@ -37,8 +37,9 @@ fn ensure_check_success(
     let no_pacman_updates = manager == "pacman"
         && output.exit_code == Some(1)
         && output.merged_text().trim().is_empty();
-    let updates_available =
-        matches!(manager, "dnf" | "yum") && output.exit_code == Some(100) && !updates.is_empty();
+    let updates_available = matches!(manager, "dnf" | "yum" | "rustup")
+        && output.exit_code == Some(100)
+        && !updates.is_empty();
     if no_pacman_updates || updates_available {
         Ok(())
     } else {
@@ -169,6 +170,33 @@ mod tests {
 
         let unparsable = output(100, false, "");
         assert!(ensure_check_success("dnf", "dnf", &unparsable, &[]).is_err());
+    }
+
+    #[test]
+    fn rustup_update_exit_code_requires_parseable_updates() {
+        let update = PackageUpdate::new(
+            "rustup:nightly-x86_64-pc-windows-msvc",
+            "1.100.0-nightly",
+            "1.100.0-nightly",
+        );
+        let available = output(
+            100,
+            false,
+            "nightly-x86_64-pc-windows-msvc - update available: 1.100.0-nightly -> 1.100.0-nightly",
+        );
+
+        assert!(
+            ensure_check_success(
+                "rustup",
+                "rustup",
+                &available,
+                std::slice::from_ref(&update)
+            )
+            .is_ok()
+        );
+
+        let unparsable = output(100, false, "");
+        assert!(ensure_check_success("rustup", "rustup", &unparsable, &[]).is_err());
     }
 
     #[test]

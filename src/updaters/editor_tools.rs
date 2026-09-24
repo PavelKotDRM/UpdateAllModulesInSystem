@@ -2,7 +2,7 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{UpdaterError, capture_command, find_command};
+use crate::updater::{UpdaterError, capture_command, find_command, is_update_cancelled};
 use crate::updaters::common::{ensure_success, stream_checked};
 use crate::updaters::http_client::http_client;
 use reqwest::blocking::Client;
@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::thread;
+use std::time::Duration;
 
 const MARKETPLACE_QUERY_URL: &str =
     "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery";
@@ -19,6 +21,7 @@ const OPEN_VSX_API_URL: &str = "https://open-vsx.org/api";
 const MARKETPLACE_BATCH_SIZE: usize = 8;
 const MARKETPLACE_LATEST_FLAGS: u32 = 1 | 16 | 512;
 const MARKETPLACE_HISTORY_FLAGS: u32 = 1 | 16;
+const EDITOR_EXTENSION_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Debug, PartialEq)]
 struct InstalledExtension {
@@ -311,8 +314,9 @@ fn apply_editor_extensions(
 
     let mut failed_updates = Vec::new();
     for update in selected_updates {
-        let args = editor_cli_args(program, extension_install_args(update));
-        if let Err(error) = stream_checked(&command, &args, log_sender) {
+        if let Err(error) =
+            install_editor_extension_with_retry(program, &command, update, log_sender)
+        {
             let display_name = update.display_name();
             let _ = log_sender.send(crate::tr!(
                 crate::localization::current_language(),
@@ -337,6 +341,43 @@ fn apply_editor_extensions(
             count = failed_updates.len(),
             errors = failed_updates.join(", ")
         )))
+    }
+}
+
+fn install_editor_extension_with_retry(
+    program: &str,
+    command: &str,
+    update: &PackageUpdate,
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let args = editor_cli_args(program, extension_install_args(update));
+    match stream_checked(command, &args, log_sender) {
+        Err(error) if is_aborted_editor_extension_install(&error) && !is_update_cancelled() => {
+            let _ = log_sender.send(crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                editor_extension_install_retrying,
+                program = program,
+                extension = update.display_name(),
+                error = error
+            ));
+            thread::sleep(EDITOR_EXTENSION_RETRY_DELAY);
+            if is_update_cancelled() {
+                Err(error)
+            } else {
+                stream_checked(command, &args, log_sender)
+            }
+        }
+        result => result,
+    }
+}
+
+fn is_aborted_editor_extension_install(error: &UpdaterError) -> bool {
+    match error {
+        UpdaterError::CommandFailed { stderr, .. } => stderr
+            .lines()
+            .any(|line| line.trim().eq_ignore_ascii_case("aborted")),
+        _ => false,
     }
 }
 
@@ -560,12 +601,152 @@ editor_updater!(
 mod tests {
     use super::{
         collect_extension_updates, editor_cli_args_for_root, extension_install_args,
-        is_builtin_extension_location, parse_editor_extensions, parse_marketplace_versions,
+        install_editor_extension_with_retry, is_builtin_extension_location,
+        parse_editor_extensions, parse_marketplace_versions,
         parse_marketplace_versions_for_platform, parse_profile_names,
     };
     use crate::model::PackageUpdate;
+    use crate::updater::{
+        CommandExecutor, CommandOutput, UpdateCancellation, UpdaterError, with_command_executor,
+        with_update_cancellation,
+    };
     use serde_json::json;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::sync::{
+        Arc, Mutex,
+        mpsc::{self, Sender},
+    };
+
+    type CommandCalls = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+    struct SequencedExecutor {
+        calls: CommandCalls,
+        outputs: Mutex<VecDeque<CommandOutput>>,
+    }
+
+    impl CommandExecutor for SequencedExecutor {
+        fn capture(&self, _program: &str, _args: &[String]) -> Result<CommandOutput, UpdaterError> {
+            unreachable!("extension installation does not capture command output")
+        }
+
+        fn stream(
+            &self,
+            program: &str,
+            args: &[String],
+            _log_sender: &Sender<String>,
+        ) -> Result<CommandOutput, UpdaterError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((program.to_owned(), args.to_vec()));
+            Ok(self
+                .outputs
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("a command result should be queued"))
+        }
+    }
+
+    fn command_output(success: bool, stderr: &str) -> CommandOutput {
+        CommandOutput {
+            stdout: String::new(),
+            stderr: stderr.to_owned(),
+            exit_code: Some(if success { 0 } else { 1 }),
+            success,
+        }
+    }
+
+    #[test]
+    fn retries_aborted_editor_extension_install_once() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let executor = SequencedExecutor {
+            calls: Arc::clone(&calls),
+            outputs: Mutex::new(VecDeque::from([
+                command_output(
+                    false,
+                    "Installing extensions...\naborted\nFailed Installing Extensions",
+                ),
+                command_output(true, ""),
+            ])),
+        };
+        let update = PackageUpdate::new("ms-python.python", "1.0.0", "2.0.0").with_scope("Python");
+        let (log_sender, log_receiver) = mpsc::channel();
+
+        let result = with_command_executor(Arc::new(executor), || {
+            install_editor_extension_with_retry("codium", "codium", &update, &log_sender)
+        });
+
+        assert!(result.is_ok());
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            (
+                "codium".to_owned(),
+                vec![
+                    "--install-extension".to_owned(),
+                    "ms-python.python@2.0.0".to_owned(),
+                    "--force".to_owned(),
+                    "--profile".to_owned(),
+                    "Python".to_owned()
+                ]
+            )
+        );
+        assert_eq!(calls[0], calls[1]);
+        assert_eq!(log_receiver.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn does_not_retry_non_aborted_editor_extension_install_failure() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let executor = SequencedExecutor {
+            calls: Arc::clone(&calls),
+            outputs: Mutex::new(VecDeque::from([
+                command_output(false, "network unavailable"),
+                command_output(true, ""),
+            ])),
+        };
+        let update = PackageUpdate::new("ms-python.python", "1.0.0", "2.0.0");
+        let (log_sender, log_receiver) = mpsc::channel();
+
+        let result = with_command_executor(Arc::new(executor), || {
+            install_editor_extension_with_retry("codium", "codium", &update, &log_sender)
+        });
+
+        assert!(matches!(result, Err(UpdaterError::CommandFailed { .. })));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(log_receiver.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn does_not_retry_aborted_install_after_cancellation() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let executor = SequencedExecutor {
+            calls: Arc::clone(&calls),
+            outputs: Mutex::new(VecDeque::from([
+                command_output(
+                    false,
+                    "Installing extensions...\naborted\nFailed Installing Extensions",
+                ),
+                command_output(true, ""),
+            ])),
+        };
+        let update = PackageUpdate::new("ms-python.python", "1.0.0", "2.0.0");
+        let (log_sender, log_receiver) = mpsc::channel();
+        let cancellation = UpdateCancellation::default();
+
+        let result = with_command_executor(Arc::new(executor), || {
+            with_update_cancellation(cancellation.clone(), || {
+                let _ = cancellation.cancel();
+                install_editor_extension_with_retry("codium", "codium", &update, &log_sender)
+            })
+        });
+
+        assert!(matches!(result, Err(UpdaterError::CommandFailed { .. })));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(log_receiver.try_iter().count(), 0);
+    }
 
     #[test]
     fn parses_extension_ids_and_versions() {

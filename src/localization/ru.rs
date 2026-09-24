@@ -170,6 +170,7 @@ pub(super) const CATALOG: Catalog = Catalog {
         package_manager_version_unknown: "{program}: не удалось определить текущую версию",
         npm_registry_latest_missing: "{program}: npm registry не вернул последнюю версию",
         editor_extension_update_failed: "{program}: не удалось обновить расширение `{extension}`: {error}",
+        editor_extension_install_retrying: "{program}: установка расширения `{extension}` была прервана; повторная попытка: {error}",
         editor_extensions_update_failed: "{program}: ошибки обновления расширений ({count}): {errors}",
         editor_command_missing: "{program}: команда редактора не найдена",
     },

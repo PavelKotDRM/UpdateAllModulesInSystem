@@ -149,8 +149,11 @@ pub(super) fn parse_snap_updates(text: &str) -> Vec<PackageUpdate> {
 pub(super) fn parse_rustup_updates(text: &str) -> Vec<PackageUpdate> {
     text.lines()
         .filter_map(|line| {
-            let (toolchain, versions) = line.split_once(" - Update available")?;
-            let versions = versions.trim().strip_prefix(':')?.trim();
+            let (toolchain, details) = line.split_once(" - ")?;
+            let (status, versions) = details.split_once(':')?;
+            if !status.trim().eq_ignore_ascii_case("update available") {
+                return None;
+            }
             let (current, available) = versions.split_once("->")?;
             let current = current.split_whitespace().next()?;
             let available = available.split_whitespace().next()?;
@@ -548,6 +551,18 @@ nightly-x86_64-unknown-linux-gnu - Up to date : 1.92.0-nightly (hash 2026-09-20)
         assert_eq!(updates[0].name, "rustup:stable-x86_64-unknown-linux-gnu");
         assert_eq!(updates[0].current_version, "1.90.0");
         assert_eq!(updates[0].available_version, "1.91.0");
+    }
+
+    #[test]
+    fn parse_rustup_updates_accepts_lowercase_status() {
+        let text = "nightly-x86_64-pc-windows-msvc - update available: 1.100.0-nightly (old) -> 1.100.0-nightly (new)\n";
+
+        let updates = parse_rustup_updates(text);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "rustup:nightly-x86_64-pc-windows-msvc");
+        assert_eq!(updates[0].current_version, "1.100.0-nightly");
+        assert_eq!(updates[0].available_version, "1.100.0-nightly");
     }
 
     #[test]

@@ -155,6 +155,15 @@ fn register_active_process(process_id: u32) -> Option<ProcessRegistration> {
     })
 }
 
+pub(crate) fn is_update_cancelled() -> bool {
+    UPDATE_CANCELLATION.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .is_some_and(UpdateCancellation::is_cancelled)
+    })
+}
+
 #[cfg(target_os = "windows")]
 fn terminate_process_tree(process_id: u32) -> io::Result<()> {
     let output = Command::new("taskkill")

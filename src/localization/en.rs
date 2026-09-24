@@ -170,6 +170,7 @@ pub(super) const CATALOG: Catalog = Catalog {
         package_manager_version_unknown: "{program}: could not determine the current version",
         npm_registry_latest_missing: "{program}: the npm registry did not return the latest version",
         editor_extension_update_failed: "{program}: failed to update extension `{extension}`: {error}",
+        editor_extension_install_retrying: "{program}: installation of extension `{extension}` was aborted; retrying once: {error}",
         editor_extensions_update_failed: "{program}: extension update failures ({count}): {errors}",
         editor_command_missing: "{program}: editor command was not found",
     },
