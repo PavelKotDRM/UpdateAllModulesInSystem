@@ -60,7 +60,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $session = New-Object -ComObject Microsoft.Update.Session
 $searcher = $session.CreateUpdateSearcher()
-$result = $searcher.Search("IsInstalled=0 and IsHidden=0")
+$result = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
 if ($result.Updates.Count -eq 0) { Write-Output '[]'; exit 0 }
 $items = @()
 for ($i = 0; $i -lt $result.Updates.Count; $i++) {
@@ -86,15 +86,14 @@ $items | ConvertTo-Json -Compress
 pub(super) fn windows_update_apply_updates(
     _force_yes: bool,
     selected_updates: &[PackageUpdate],
-    log_sender: &Sender<String>,
+    _log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let _ = log_sender.send(crate::tr!(
+    Err(UpdaterError::Message(crate::tr!(
         crate::localization::current_language(),
         updater,
         windows_update_summary,
         count = selected_updates.len()
-    ));
-    Ok(())
+    )))
 }
 
 pub(super) fn winget_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
@@ -386,9 +385,6 @@ pub(super) fn msys2_installed() -> bool {
 }
 
 pub(super) fn msys2_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    let sync_output = msys2_capture_pacman(&["-Sy", "--noconfirm"])?;
-    ensure_msys2_pacman_success(sync_output)?;
-
     let output = msys2_capture_pacman(&["-Qu"])?;
     parse_msys2_query_output(output)
 }
@@ -403,14 +399,6 @@ fn parse_msys2_query_output(output: CommandOutput) -> Result<Vec<PackageUpdate>,
     }
 
     Err(msys2_pacman_error(output))
-}
-
-fn ensure_msys2_pacman_success(output: CommandOutput) -> Result<CommandOutput, UpdaterError> {
-    if output.success {
-        Ok(output)
-    } else {
-        Err(msys2_pacman_error(output))
-    }
 }
 
 fn msys2_pacman_error(output: CommandOutput) -> UpdaterError {
@@ -537,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_update_apply_only_recommends_windows_update_center() {
+    fn windows_update_apply_reports_manual_installation_limit() {
         let updates = vec![
             PackageUpdate::new("windows-update:KB1", "installed", "available"),
             PackageUpdate::new("windows-update:KB2", "installed", "available"),
@@ -545,12 +533,11 @@ mod tests {
         let (log_tx, log_rx) = std::sync::mpsc::channel();
 
         let result = windows_update_apply_updates(true, &updates, &log_tx);
-
-        assert!(result.is_ok());
-        let message = log_rx.recv().expect("recommendation should be logged");
+        let message = result.unwrap_err().to_string();
         assert!(message.contains("available update count: 2"));
         assert!(message.contains("Windows Update"));
         assert!(message.contains("manually"));
+        assert!(log_rx.try_recv().is_err());
     }
 
     #[test]

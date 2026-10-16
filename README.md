@@ -249,7 +249,8 @@ The compiled binary archives for the supported platforms will then appear in Git
 
 - The `windows-update` module is available only on Windows when `powershell` or `pwsh` is installed. It is treated as a system module and requires elevated privileges.
 - The `windows-update` check uses no external PowerShell modules: the COM API `Microsoft.Update.Session` queries uninstalled, visible updates of type `Software` (`IsInstalled=0 and IsHidden=0 and Type='Software'`). Their titles are passed to the application as JSON and displayed as available updates.
-- Automatic Windows Update installation is disabled. When an update is started, the application reports the number of selected items and offers to open `Settings -> Windows Update` for manual installation.
+- Automatic Windows Update installation is disabled. When an update is started, the application reports the number of selected items and directs the user to install them manually through `Settings -> Windows Update`.
+- The MSYS2 check uses locally cached pacman sync databases without refreshing them, avoiding a standalone `pacman -Sy` that can leave the system in a partial-upgrade state. Explicit updates use the full `pacman -Syu` transaction.
 - `winget` and `choco` use specialized output parsing when checking for updates; entries without an actual version increase are discarded. For `winget`, the application also checks whether the available version is already installed under a different package identifier. A successful command is considered sufficient confirmation because some installers, including Unity, retain the old version entry during an immediate follow-up check.
 - Homebrew uses the machine-readable `brew outdated --json=v2` output with typed parsing of formulae and casks.
 - `pip` is invoked through `python -m pip` to reduce dependency on executable paths.
