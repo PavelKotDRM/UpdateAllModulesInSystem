@@ -319,9 +319,28 @@ pub(super) fn apply_rustup_updates(
     selected_updates: &[PackageUpdate],
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
-    let mut args = vec!["update".to_owned()];
-    args.extend(selected_package_names("rustup", selected_updates)?);
-    stream_checked("rustup", &args, log_sender)
+    for args in rustup_update_commands(selected_updates)? {
+        stream_checked("rustup", &args, log_sender)?;
+    }
+    Ok(())
+}
+
+fn rustup_update_commands(
+    selected_updates: &[PackageUpdate],
+) -> Result<Vec<Vec<String>>, UpdaterError> {
+    let names = selected_package_names("rustup", selected_updates)?;
+    let update_self = names.iter().any(|name| name == "rustup");
+    let toolchains: Vec<_> = names.into_iter().filter(|name| name != "rustup").collect();
+    let mut commands = Vec::new();
+    if !toolchains.is_empty() {
+        let mut args = vec!["update".to_owned(), "--no-self-update".to_owned()];
+        args.extend(toolchains);
+        commands.push(args);
+    }
+    if update_self {
+        commands.push(vec!["self".to_owned(), "update".to_owned()]);
+    }
+    Ok(commands)
 }
 
 pub(super) fn check_rustup_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
@@ -342,7 +361,69 @@ pub(super) fn installed_rustup() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_uv_versions;
+    use super::{extract_uv_versions, rustup_update_commands};
+    use crate::model::PackageUpdate;
+    use crate::updaters::parsers::parse_rustup_updates;
+
+    #[test]
+    fn rustup_self_update_is_not_a_toolchain_update() {
+        let updates = parse_rustup_updates("rustup - update available : 1.29.1 -> 1.29.2");
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            rustup_update_commands(&updates).unwrap(),
+            vec![vec!["self", "update"]]
+        );
+    }
+
+    #[test]
+    fn rustup_updates_toolchains_before_itself() {
+        let updates = parse_rustup_updates(
+            "nightly-x86_64-pc-windows-msvc - update available: 1.101.0-nightly (old) -> 1.101.0-nightly (new)\n\
+             rustup - update available : 1.29.1 -> 1.29.2",
+        );
+
+        assert_eq!(
+            rustup_update_commands(&updates).unwrap(),
+            vec![
+                vec![
+                    "update",
+                    "--no-self-update",
+                    "nightly-x86_64-pc-windows-msvc"
+                ],
+                vec!["self", "update"],
+            ]
+        );
+    }
+
+    #[test]
+    fn rustup_updates_only_selected_toolchains_without_duplicates() {
+        let updates = vec![
+            PackageUpdate::new("rustup:stable", "1.98.0", "1.99.0"),
+            PackageUpdate::new("rustup:stable", "1.98.0", "1.99.0"),
+            PackageUpdate::new("rustup:nightly", "old", "new"),
+        ];
+
+        assert_eq!(
+            rustup_update_commands(&updates).unwrap(),
+            vec![vec!["update", "--no-self-update", "stable", "nightly"]]
+        );
+    }
+
+    #[test]
+    fn rustup_empty_selection_does_not_update_all_toolchains() {
+        assert!(rustup_update_commands(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rustup_rejects_invalid_selection_before_running_commands() {
+        let updates = vec![
+            PackageUpdate::new("rustup:rustup", "1.29.1", "1.29.2"),
+            PackageUpdate::new("pip:example", "1", "2"),
+        ];
+
+        assert!(rustup_update_commands(&updates).is_err());
+    }
 
     #[test]
     fn extract_uv_versions_reads_update_dry_run_output() {
