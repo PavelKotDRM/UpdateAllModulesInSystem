@@ -19,7 +19,7 @@ The project supports two operating modes:
 - Checks published versions and updates extensions for VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, and Positron.
 - Checks and updates extensions across all local VS Code and VS Code Insiders profiles.
 - Updates the editors themselves through the system package manager (`winget`, `choco`, `apt`, `brew`, and others).
-- Supports `rustup`.
+- Supports Rust toolchain updates and Rustup self-updates as separate selections.
 - Supports `msys2` through `pacman` on Windows.
 - Applies package-level selections where the updater supports targeted upgrades; `pacman`, MSYS2, `apk`, `xbps`, and `emerge` clearly use full-system updates without misleading package checkboxes.
 - Provides tabular CLI output.
@@ -155,7 +155,7 @@ The graphical mode provides:
 - a status list of detected package managers and tools;
 - expandable update details with package checkboxes where targeted updates are supported; full-system-only managers show an explicit notice instead;
 - a dedicated logs tab with expandable groups by module;
-- export of logs grouped by module to a text file;
+- export of all logs grouped by module to the system clipboard as JSON (paste into a text editor to save a file);
 - automatic status rescanning after an update finishes;
 - a colored status for the current update stage directly on each module card.
 
