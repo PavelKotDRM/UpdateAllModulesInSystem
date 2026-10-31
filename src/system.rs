@@ -417,22 +417,38 @@ pub fn command_available(program: &str) -> bool {
     command_exists(program)
 }
 
-/// Скрывает текущее окно консоли Windows при запуске GUI.
+/// Отсоединяет GUI-процесс Windows от консоли, созданной только для него.
 ///
-/// На остальных платформах функция ничего не делает.
-pub fn hide_windows_console_if_needed(gui_mode: bool) {
-    if cfg!(target_os = "windows") && gui_mode {
-        #[cfg(target_os = "windows")]
-        unsafe {
-            use windows_sys::Win32::System::Console::GetConsoleWindow;
-            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+/// Окно консоли не скрывается: если приложение запущено из терминала, консоль
+/// принадлежит пользователю и остаётся без изменений. На остальных платформах
+/// функция ничего не делает.
+pub fn detach_windows_console_if_needed(gui_mode: bool) {
+    if !gui_mode {
+        return;
+    }
 
-            let window = GetConsoleWindow();
-            if !window.is_null() {
-                ShowWindow(window, SW_HIDE);
-            }
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+
+        // Если к консоли подключён только текущий процесс, её создала система
+        // при запуске из Проводника, и после отсоединения окно закроется само.
+        let mut process_ids = [0_u32; 2];
+        let attached = GetConsoleProcessList(process_ids.as_mut_ptr(), process_ids.len() as u32);
+        if attached == 1 && FreeConsole() != 0 {
+            CONSOLE_DETACHED.store(true, std::sync::atomic::Ordering::Release);
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+static CONSOLE_DETACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Сообщает, что GUI-процесс отсоединился от консоли и дочерние консольные
+/// программы нужно запускать без собственного окна.
+#[cfg(target_os = "windows")]
+pub fn console_detached() -> bool {
+    CONSOLE_DETACHED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 #[cfg(test)]

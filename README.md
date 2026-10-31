@@ -250,7 +250,7 @@ The compiled binary archives for the supported platforms will then appear in Git
 - The `windows-update` module is available only on Windows when `powershell` or `pwsh` is installed. It is treated as a system module and requires elevated privileges.
 - The `windows-update` check uses no external PowerShell modules: the COM API `Microsoft.Update.Session` queries uninstalled, visible updates of type `Software` (`IsInstalled=0 and IsHidden=0 and Type='Software'`). Their titles are passed to the application as JSON and displayed as available updates.
 - Automatic Windows Update installation is disabled. When an update is started, the application reports the number of selected items and directs the user to install them manually through `Settings -> Windows Update`.
-- The MSYS2 check uses locally cached pacman sync databases without refreshing them, avoiding a standalone `pacman -Sy` that can leave the system in a partial-upgrade state. Explicit updates use the full `pacman -Syu` transaction.
+- The MSYS2 check downloads current pacman sync databases into a temporary database with a copy of the installed-package database. The live databases are unchanged, avoiding a partial-upgrade state while detecting new core and package updates. Network and database errors are reported rather than treated as no updates. Explicit updates run the full `pacman -Syu` transaction, then repeat it in a fresh process to finish non-core updates after a core upgrade.
 - `winget` and `choco` use specialized output parsing when checking for updates; entries without an actual version increase are discarded. For `winget`, the application also checks whether the available version is already installed under a different package identifier. A successful command is considered sufficient confirmation because some installers, including Unity, retain the old version entry during an immediate follow-up check.
 - Homebrew uses the machine-readable `brew outdated --json=v2` output with typed parsing of formulae and casks.
 - `pip` is invoked through `python -m pip` to reduce dependency on executable paths.
@@ -273,7 +273,7 @@ The project builds and runs. The basic CLI and GUI scenarios work, and updates a
 Current limitations:
 
 - For some Linux package managers (`dnf`, `yum`, `zypper`, `pacman`, `apk`, `xbps`, `emerge`, `snap`), update checks rely on heuristic parsing of text output because a single stable machine-readable format is not available across all supported versions.
-- For `msys2`, the preferred method invokes its internal `pacman` through `bash.exe` from common installation directories (`C:\msys64`, `C:\tools\msys64`), with a fallback to `pacman` from `PATH`.
+- For `msys2`, checks require its own `bash.exe`, discovered through `MSYS2_ROOT`, common installation directories (`C:\msys64`, `C:\tools\msys64`), or beside `pacman` in `PATH`. Updates retain a direct `pacman` fallback from `PATH`.
 - Checking published extension versions depends on the availability of Visual Studio Marketplace or Open VSX; extensions from private and alternative registries are not matched automatically.
 - If the Node.js installation method cannot be detected, the automatic update is canceled with a recommendation to use the original package manager or the official installer. Updating a system-wide MSI installation on Windows may require administrator privileges.
 

@@ -209,6 +209,8 @@ pub(crate) struct UpdaterText {
     pub(crate) command_exit_code_with_output: &'static str,
     pub(crate) command_exit_code: &'static str,
     pub(crate) pacman_no_details: &'static str,
+    pub(crate) msys2_bash_missing: &'static str,
+    pub(crate) msys2_finishing_update: &'static str,
     pub(crate) apt_get_refreshing: &'static str,
     pub(crate) selected_update_mode: &'static str,
     pub(crate) updating_selected_packages: &'static str,

@@ -1,8 +1,20 @@
 [package]
 name = "update_all_modules"
-version = "0.5.7"
+version = "0.5.8"
 edition = "2024"
 build = "build.rs"
+description = "Checks and updates system package managers and developer tools"
+authors = ["Pavel Kotlyarov"]
+license = "MIT"
+repository = "https://github.com/PavelKotDRM/UpdateAllModulesInSystem"
+
+[package.metadata.winresource]
+ProductName = "UpdateAllModules"
+FileDescription = "UpdateAllModules - package manager and developer tools updater"
+CompanyName = "Pavel Kotlyarov"
+LegalCopyright = "Copyright (c) 2026 Pavel Kotlyarov. MIT License."
+OriginalFilename = "update_all_modules.exe"
+InternalName = "update_all_modules"
 
 [dependencies]
 anyhow = "1"
@@ -48,6 +60,7 @@ eframe = { version = "0.37", default-features = false, features = [
 [build-dependencies]
 vergen-gitcl = "10"
 anyhow = "1.0"
+winresource = "0.1"
 
 [lints.rust]
 missing_docs = "warn"

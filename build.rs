@@ -28,5 +28,25 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "неизвестно".to_owned());
     println!("cargo:rustc-env=BUILD_RUSTC_VERSION={rustc_version}");
 
+    embed_windows_resources()?;
+
+    Ok(())
+}
+
+/// Встраивает в Windows-EXE VERSIONINFO и манифест приложения.
+///
+/// Неподписанные EXE без сведений об издателе и манифеста чаще получают
+/// эвристические срабатывания антивирусов.
+fn embed_windows_resources() -> Result<()> {
+    const MANIFEST: &str = "windows/app.manifest";
+    println!("cargo:rerun-if-changed={MANIFEST}");
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return Ok(());
+    }
+
+    let mut resource = winresource::WindowsResource::new();
+    resource.set_manifest_file(MANIFEST);
+    resource.compile()?;
     Ok(())
 }

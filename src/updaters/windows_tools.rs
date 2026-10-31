@@ -2,7 +2,7 @@
 
 use crate::model::PackageUpdate;
 use crate::system;
-use crate::updater::{CommandOutput, UpdaterError, capture_command, stream_command};
+use crate::updater::{CommandOutput, UpdaterError, capture_command, find_command, stream_command};
 use crate::updaters::common::stream_checked;
 use crate::updaters::parsers::{
     parse_choco_updates, parse_msys2_updates, parse_windows_update_items, parse_winget_updates,
@@ -385,17 +385,50 @@ pub(super) fn msys2_installed() -> bool {
 }
 
 pub(super) fn msys2_check_updates() -> Result<Vec<PackageUpdate>, UpdaterError> {
-    let output = msys2_capture_pacman(&["-Qu"])?;
+    let bash_path = msys2_bash_path().ok_or_else(|| {
+        UpdaterError::Message(
+            crate::tr!(
+                crate::localization::current_language(),
+                updater,
+                msys2_bash_missing
+            )
+            .to_owned(),
+        )
+    })?;
+    msys2_check_updates_with_bash(&bash_path)
+}
+
+// Keep freshly downloaded sync databases separate from the live installation.
+const MSYS2_CHECK_SCRIPT: &str = r#"set -e
+export LC_ALL=C
+check_db=$(mktemp -d /tmp/update-all-msys2.XXXXXXXX)
+trap 'rm -rf -- "$check_db"' EXIT
+db_path=$(pacman-conf DBPath)
+cp -a -- "${db_path%/}/local" "$check_db/local"
+pacman -Sy --dbpath "$check_db" --logfile /dev/null --noconfirm >&2
+if updates=$(pacman -Qu --dbpath "$check_db" --color never 2>&1); then
+    printf '%s\n' "$updates"
+else
+    status=$?
+    if [ "$status" -eq 1 ] && [ -z "$updates" ]; then
+        exit 0
+    fi
+    printf '%s\n' "$updates" >&2
+    exit "$status"
+fi
+"#;
+
+fn msys2_check_updates_with_bash(bash_path: &str) -> Result<Vec<PackageUpdate>, UpdaterError> {
+    let output = capture_command(
+        bash_path,
+        &["-lc".to_owned(), MSYS2_CHECK_SCRIPT.to_owned()],
+    )?;
     parse_msys2_query_output(output)
 }
 
 fn parse_msys2_query_output(output: CommandOutput) -> Result<Vec<PackageUpdate>, UpdaterError> {
     if output.success {
         return Ok(parse_msys2_updates(&output.stdout));
-    }
-
-    if output.exit_code == Some(1) && output.merged_text().trim().is_empty() {
-        return Ok(Vec::new());
     }
 
     Err(msys2_pacman_error(output))
@@ -425,7 +458,28 @@ pub(super) fn msys2_apply_updates(
     log_sender: &Sender<String>,
 ) -> Result<(), UpdaterError> {
     let args = msys2_update_args(force_yes);
-    let output = msys2_stream_pacman(&args, log_sender)?;
+    msys2_apply_with_runner(|| msys2_stream_pacman(&args, log_sender), log_sender)
+}
+
+fn msys2_apply_with_runner(
+    mut run: impl FnMut() -> Result<CommandOutput, UpdaterError>,
+    log_sender: &Sender<String>,
+) -> Result<(), UpdaterError> {
+    let output = run()?;
+    if !output.success {
+        return Err(msys2_pacman_error(output));
+    }
+
+    let _ = log_sender.send(
+        crate::tr!(
+            crate::localization::current_language(),
+            updater,
+            msys2_finishing_update
+        )
+        .to_owned(),
+    );
+    // Core upgrades end the first transaction; use a fresh process for the rest.
+    let output = run()?;
     if output.success {
         Ok(())
     } else {
@@ -460,21 +514,11 @@ fn msys2_bash_path() -> Option<String> {
             return Some(candidate.to_string_lossy().into_owned());
         }
     }
-    None
-}
-
-fn msys2_capture_pacman(args: &[&str]) -> Result<CommandOutput, UpdaterError> {
-    if let Some(bash_path) = msys2_bash_path() {
-        let command = if args.is_empty() {
-            "pacman".to_owned()
-        } else {
-            format!("pacman {}", args.join(" "))
-        };
-        return capture_command(&bash_path, &["-lc".to_owned(), command]);
-    }
-
-    let fallback_args: Vec<String> = args.iter().map(|value| (*value).to_owned()).collect();
-    capture_command("pacman", &fallback_args)
+    let pacman_path = PathBuf::from(find_command("pacman")?);
+    let candidate = pacman_path.parent()?.join("bash.exe");
+    candidate
+        .is_file()
+        .then(|| candidate.to_string_lossy().into_owned())
 }
 
 fn msys2_stream_pacman(
@@ -483,9 +527,9 @@ fn msys2_stream_pacman(
 ) -> Result<CommandOutput, UpdaterError> {
     if let Some(bash_path) = msys2_bash_path() {
         let command = if args.is_empty() {
-            "pacman".to_owned()
+            "exec pacman".to_owned()
         } else {
-            format!("pacman {}", args.join(" "))
+            format!("exec pacman {}", args.join(" "))
         };
         return stream_command(&bash_path, &["-lc".to_owned(), command], log_sender);
     }
@@ -497,9 +541,90 @@ fn msys2_stream_pacman(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::updater::{CommandExecutor, with_command_executor};
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    struct Msys2CheckExecutor {
+        output: CommandOutput,
+    }
+
+    impl CommandExecutor for Msys2CheckExecutor {
+        fn capture(&self, program: &str, args: &[String]) -> Result<CommandOutput, UpdaterError> {
+            assert_eq!(program, "msys2-bash");
+            assert_eq!(args, &["-lc".to_owned(), MSYS2_CHECK_SCRIPT.to_owned()]);
+            assert!(args[1].contains("cp -a -- \"${db_path%/}/local\""));
+            assert!(args[1].contains("pacman -Sy --dbpath \"$check_db\""));
+            assert!(args[1].contains("pacman -Qu --dbpath \"$check_db\""));
+            Ok(CommandOutput {
+                stdout: self.output.stdout.clone(),
+                stderr: self.output.stderr.clone(),
+                exit_code: self.output.exit_code,
+                success: self.output.success,
+            })
+        }
+
+        fn stream(
+            &self,
+            _program: &str,
+            _args: &[String],
+            _log_sender: &Sender<String>,
+        ) -> Result<CommandOutput, UpdaterError> {
+            unreachable!("update checks do not install packages")
+        }
+    }
+
+    fn msys2_output(success: bool, stdout: &str, stderr: &str) -> CommandOutput {
+        CommandOutput {
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+            exit_code: Some(if success { 0 } else { 1 }),
+            success,
+        }
+    }
 
     #[test]
-    fn empty_pacman_query_exit_one_means_no_updates() {
+    fn msys2_check_reports_core_and_non_core_updates_from_fresh_database() {
+        let executor = Msys2CheckExecutor {
+            output: msys2_output(
+                true,
+                "msys2-runtime 3.5.7-1 -> 3.6.0-1\npacman 6.1.0-3 -> 7.0.0-1\nmingw-w64-ucrt-x86_64-gcc 14.2.0-1 -> 15.1.0-1\n",
+                ":: Synchronizing package databases...\n msys downloading...",
+            ),
+        };
+        let updates = with_command_executor(Arc::new(executor), || {
+            msys2_check_updates_with_bash("msys2-bash")
+        })
+        .unwrap();
+
+        assert_eq!(updates.len(), 3);
+        assert_eq!(updates[0].name, "msys2:msys2-runtime");
+        assert_eq!(updates[0].current_version, "3.5.7-1");
+        assert_eq!(updates[0].available_version, "3.6.0-1");
+        assert_eq!(updates[1].name, "msys2:pacman");
+        assert_eq!(updates[2].name, "msys2:mingw-w64-ucrt-x86_64-gcc");
+    }
+
+    #[test]
+    fn msys2_check_reports_sync_errors_instead_of_stale_updates() {
+        let executor = Msys2CheckExecutor {
+            output: msys2_output(false, "", "error: failed to synchronize all databases"),
+        };
+        let error = with_command_executor(Arc::new(executor), || {
+            msys2_check_updates_with_bash("msys2-bash")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("failed to synchronize"));
+    }
+
+    #[test]
+    fn msys2_check_accepts_empty_query_after_successful_sync() {
+        let output = msys2_output(true, "", ":: Synchronizing package databases...");
+        assert!(parse_msys2_query_output(output).unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_msys2_check_failure_is_not_treated_as_no_updates() {
         let output = CommandOutput {
             stdout: String::new(),
             stderr: String::new(),
@@ -507,8 +632,7 @@ mod tests {
             success: false,
         };
 
-        let updates = parse_msys2_query_output(output).unwrap();
-        assert!(updates.is_empty());
+        assert!(parse_msys2_query_output(output).is_err());
     }
 
     #[test]
@@ -599,6 +723,60 @@ mod tests {
     fn msys2_only_suppresses_prompts_when_force_yes_is_enabled() {
         assert_eq!(msys2_update_args(false), ["-Syu", "--needed"]);
         assert_eq!(msys2_update_args(true), ["-Syu", "--needed", "--noconfirm"]);
+    }
+
+    #[test]
+    fn msys2_restarts_full_upgrade_after_core_transaction() {
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+        let mut outputs = VecDeque::from([
+            msys2_output(true, ":: Starting core system upgrade...", ""),
+            msys2_output(true, ":: Starting full system upgrade...", ""),
+        ]);
+        let mut calls = 0;
+        msys2_apply_with_runner(
+            || {
+                calls += 1;
+                Ok(outputs.pop_front().unwrap())
+            },
+            &log_tx,
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(log_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn msys2_does_not_retry_failed_first_transaction() {
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+        let mut calls = 0;
+        let error = msys2_apply_with_runner(
+            || {
+                calls += 1;
+                Ok(msys2_output(
+                    false,
+                    "",
+                    "error: failed to commit transaction",
+                ))
+            },
+            &log_tx,
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(error.to_string().contains("failed to commit transaction"));
+        assert!(log_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn msys2_reports_failure_in_remaining_package_transaction() {
+        let (log_tx, _log_rx) = std::sync::mpsc::channel();
+        let mut outputs = VecDeque::from([
+            msys2_output(true, "", ""),
+            msys2_output(false, "", "error: invalid package signature"),
+        ]);
+        let error =
+            msys2_apply_with_runner(|| Ok(outputs.pop_front().unwrap()), &log_tx).unwrap_err();
+        assert!(outputs.is_empty());
+        assert!(error.to_string().contains("invalid package signature"));
     }
 
     #[test]

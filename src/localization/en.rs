@@ -139,6 +139,8 @@ pub(super) const CATALOG: Catalog = Catalog {
         command_exit_code_with_output: "{output} (exit code {code})",
         command_exit_code: "exit code {code}",
         pacman_no_details: "pacman did not provide details",
+        msys2_bash_missing: "MSYS2 bash.exe was not found. Set MSYS2_ROOT to the installation directory or add its usr\\bin directory to PATH.",
+        msys2_finishing_update: "Starting a new MSYS2 process to finish updating packages after the core system upgrade.",
         apt_get_refreshing: "apt-get: refreshing package indexes",
         selected_update_mode: "using `{subcommand}` update mode",
         updating_selected_packages: "updating selected packages only",

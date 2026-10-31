@@ -120,7 +120,7 @@ pub fn launch_gui(
     elevation_ready_file: Option<PathBuf>,
     elevation_state_file: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    system::hide_windows_console_if_needed(true);
+    system::detach_windows_console_if_needed(true);
     if let Some(path) = &elevation_state_file {
         system::validate_elevation_state_file(path)?;
     }

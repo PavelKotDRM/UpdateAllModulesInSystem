@@ -53,7 +53,7 @@ fn run_application(cli: Cli) -> Result<ExitCode> {
     let raw_args: Vec<String> = std::env::args().collect();
     let gui_mode = cli.gui || raw_args.len() == 1;
 
-    system::hide_windows_console_if_needed(gui_mode);
+    system::detach_windows_console_if_needed(gui_mode);
 
     let filter = build_selection_filter(&cli);
 

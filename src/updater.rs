@@ -166,10 +166,13 @@ pub(crate) fn is_update_cancelled() -> bool {
 
 #[cfg(target_os = "windows")]
 fn terminate_process_tree(process_id: u32) -> io::Result<()> {
-    let output = Command::new("taskkill")
+    let mut command = Command::new("taskkill");
+    command
         .args(["/T", "/F", "/PID"])
         .arg(process_id.to_string())
-        .output()?;
+        .stdin(Stdio::null());
+    hide_child_console(&mut command);
+    let output = command.output()?;
     if output.status.success() {
         return Ok(());
     }
@@ -230,8 +233,22 @@ fn configure_process_group(command: &mut Command) {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    #[cfg(not(unix))]
+    #[cfg(target_os = "windows")]
+    if crate::system::console_detached() {
+        hide_child_console(command);
+        // Без консоли интерактивный запрос не увидеть: пусть он сразу получит EOF.
+        command.stdin(Stdio::null());
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
     let _ = command;
+}
+
+#[cfg(target_os = "windows")]
+fn hide_child_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    command.creation_flags(CREATE_NO_WINDOW);
 }
 
 /// Трейт, описывающий жизненный цикл обновлятора конкретного менеджера пакетов.
